@@ -33,9 +33,13 @@ Not financial advice: it informs decisions and never trades.
    - live: same URL with `live.yml`, every 15 minutes, Monday-Friday 13:00-21:00 UTC, same body. Outside market hours (and on holidays) the scan exits after asking Alpaca whether the market is open.
 5. **Phone**: open the Pages link and add it to your home screen. To edit the watchlist from the phone, add this repo to your fine-grained GitHub token (Contents: Read and write) and paste the token in the dashboard's settings.
 
-## Screener scores (laptop, after each Screener refresh)
+## Refresh button
 
-The fundamentals stay in the Screener; the Cockpit only re-prices them. After the Screener rebuilds its snapshot:
+The ↻ button in the header asks GitHub to run the collector now: during US market hours (pre-market included) the live scan (about a minute), otherwise the full daily update (about 3 minutes). The page redraws when the new data lands. It uses the token from the dashboard's settings, which needs **Actions: Read and write** on this repo (plus Contents: Read and write for watchlist edits).
+
+## Screener scores (laptop, only after a fundamentals rebuild)
+
+The Screener's daily refresh only updates prices, which the Cockpit already does itself every 15 minutes, so there is nothing to do day to day. The fundamentals stay in the Screener; the Cockpit only re-prices them. When the Screener rebuilds its fundamentals snapshot (after earnings season, or after rescoring the tickers the Value tab marks as reported since scored):
 
     python tools/export_screener.py --push
 

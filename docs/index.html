@@ -111,6 +111,9 @@ tr.click { cursor: pointer; }
 .steps { padding-left: 20px; margin: 0 0 14px; color: var(--dim); font-size: .88rem; }
 .toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: .9rem; z-index: 40; max-width: 90vw; }
 footer { color: var(--faint); font-size: .76rem; margin-top: 26px; text-align: center; }
+#refresh-now.busy svg { animation: spin 1.2s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { #refresh-now.busy svg { animation: none; opacity: .5; } }
 .addbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin: 12px 0 8px; }
 </style>
 </head>
@@ -119,6 +122,7 @@ footer { color: var(--faint); font-size: .76rem; margin-top: 26px; text-align: c
   <header>
     <h1>Stock Cockpit</h1>
     <span class="head-right"><span class="stamp" id="stamp">Loading</span>
+      <button class="icon-btn" id="refresh-now" aria-label="Refresh now" title="Refresh now"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button>
       <button class="icon-btn" id="open-settings" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
     </span>
   </header>
@@ -394,10 +398,46 @@ function openSheet(sym, replace = false) { const s = BY.get(sym) || { sym, name:
 function closeSheet(fromPop = false) { if (!$("#layer").innerHTML) return; $("#layer").innerHTML = ""; document.body.style.overflow = ""; if (!fromPop && history.state?.sheet) history.back(); }
 function openSettings(note = "") { const g = gh();
   $("#layer").innerHTML = `<div class="sheet-back" data-close></div><div class="sheet" role="dialog" aria-modal="true"><div class="sheet-head"><span class="sheet-title">Settings</span><button class="icon-btn" data-close aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
-    <div class="sheet-body">${note ? `<p class="meh">${esc(note)}</p>` : ""}<p class="hint" style="margin-top:12px">Editing the watchlist saves docs/watchlist.json in the repo. It needs a GitHub fine-grained token with <b>Contents: Read and write</b> on this repo (you can add this repo to the token you made for the crypto Cockpit). Stored only in this browser.</p>
+    <div class="sheet-body">${note ? `<p class="meh">${esc(note)}</p>` : ""}<p class="hint" style="margin-top:12px">A GitHub fine-grained token on this repo lets the dashboard edit your watchlist (<b>Contents: Read and write</b>) and run the refresh button (<b>Actions: Read and write</b>). You can add this repo to an existing token. Stored only in this browser.</p>
       <div class="field"><label>GitHub user</label><input id="f-owner" value="${esc(g.owner)}"></div><div class="field"><label>Repo</label><input id="f-repo" value="${esc(g.repo)}"></div>
       <div class="field"><label>Token</label><input id="f-token" type="password" value="${esc(g.token)}" placeholder="github_pat_…" autocomplete="off"></div>
       <button class="btn primary" data-save>Save and test</button> <span id="set-status" class="sub" style="display:inline"></span></div></div>`; }
+/* Refresh now: ask GitHub to run the collector immediately. US market hours (pre-market included) -> the live
+   scan (~1 min); otherwise the full daily update (~3 min). Then watch for the new data and redraw. */
+let refreshing = false;
+async function refreshNow() {
+  if (refreshing) return toast("Already refreshing…");
+  const { owner, repo, token } = gh();
+  if (!token) return openSettings("Add a GitHub token with Actions: Read and write to use the refresh button.");
+  const ny = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const mins = ny.getHours() * 60 + ny.getMinutes(), weekday = ny.getDay() >= 1 && ny.getDay() <= 5;
+  const live = weekday && mins >= 4 * 60 && mins < 16 * 60;
+  const wf = live ? "live.yml" : "daily.yml";
+  const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/workflows/${wf}/dispatches`, { method: "POST",
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+    body: JSON.stringify({ ref: "main" }) }).catch(() => null);
+  if (!r || r.status !== 204) {
+    return toast(!r ? "No connection" : r.status === 403 || r.status === 404 ? "The token needs Actions: Read and write on this repo" : r.status === 401 ? "Token rejected" : "GitHub error " + r.status);
+  }
+  refreshing = true; $("#refresh-now").classList.add("busy");
+  toast(live ? "Refreshing live prices, about a minute…" : "Running the full update, about 3 minutes…");
+  const before = [DATA?.generated_at, LIVE?.generated_at, LIVE?.premarket?.generated_at].join("|");
+  const t0 = Date.now();
+  const tick = async () => {
+    const [d, l] = await Promise.all([getJson("data.json"), getJson("live.json")]);
+    const now = [d?.generated_at, l?.generated_at, l?.premarket?.generated_at].join("|");
+    if (now !== before && d) {
+      DATA = d; LIVE = l;
+      const s = await getJson("stocks.json"); if (s) { STOCKS = s.stocks; BY = new Map(STOCKS.map(x => [x.sym, x])); }
+      refreshing = false; $("#refresh-now")?.classList.remove("busy");
+      if (!$("#layer").innerHTML) { const y = scrollY; render(); scrollTo(0, y); }
+      return toast("Updated.");
+    }
+    if (Date.now() - t0 > 8 * 60000) { refreshing = false; $("#refresh-now")?.classList.remove("busy"); return toast(live ? "No new data: the market may be closed today." : "Still running; it will appear on the next refresh."); }
+    setTimeout(tick, 20000);
+  };
+  setTimeout(tick, 45000);  // the run takes at least this long, plus a minute for the site to republish
+}
 async function saveSettings() { store.set("owner", $("#f-owner").value.trim()); store.set("repo", $("#f-repo").value.trim()); store.set("token", $("#f-token").value.trim());
   const st = $("#set-status"); st.textContent = "Testing…";
   try { const r = await ghGet(); WATCH = r.tickers; st.innerHTML = `<span class="good">Connected.</span>`; render(); } catch (e) { st.innerHTML = `<span class="bad">${esc(e.message)}</span>`; } }
@@ -420,6 +460,7 @@ document.addEventListener("click", e => { const t = e.target;
   if (t.closest("[data-add]")) return toggleWatch($("#add-sym").value);
   if (t.closest("[data-save]")) return saveSettings();
   if (t.closest("#open-settings")) return openSettings();
+  if (t.closest("#refresh-now")) return refreshNow();
   const r = t.closest("[data-sym]"); if (r) return openSheet(r.dataset.sym);
   const tab = t.closest("[data-tab]"); if (tab) { current = tab.dataset.tab; history.replaceState(null, "", "#" + current); render(); return; }
   const ec = t.closest("[data-earn]"); if (ec) { ui.earn = ec.dataset.earn; return render(); }
