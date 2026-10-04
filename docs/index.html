@@ -436,9 +436,11 @@ async function refresh() { if (document.hidden || !DATA || $("#layer").innerHTML
   if (d && d.generated_at !== DATA.generated_at) { DATA = d; const s = await getJson("stocks.json"); if (s) { STOCKS = s.stocks; BY = new Map(STOCKS.map(x => [x.sym, x])); } ch = true; }
   if (ch) { const y = scrollY; render(); scrollTo(0, y); } else stamp(); }
 (async function boot() {
-  const [d, s, l, w] = await Promise.all([getJson("data.json"), getJson("stocks.json"), getJson("live.json"), getJson("watchlist.json")]);
+  const big = getJson("stocks.json");  // ~1 MB compressed: drawn after the first screen, not before it
+  const [d, l, w] = await Promise.all([getJson("data.json"), getJson("live.json"), getJson("watchlist.json")]);
   if (!d) { $("#stamp").textContent = "No data"; $("#app").innerHTML = `<p class="empty">No data yet. The first daily run fills this in.</p>`; return; }
-  DATA = d; LIVE = l; STOCKS = s?.stocks || []; BY = new Map(STOCKS.map(x => [x.sym, x]));
+  DATA = d; LIVE = l;
+  big.then(s => { STOCKS = s?.stocks || []; BY = new Map(STOCKS.map(x => [x.sym, x])); if (!$("#layer").innerHTML) { const y = scrollY; render(); scrollTo(0, y); } });
   const c = store.get("watch_cache"); WATCH = c && Date.now() - c.at < 15 * 60000 ? c.tickers : (w?.tickers || []);
   if (!TABS.some(([id]) => id === current)) current = "market";
   render();
