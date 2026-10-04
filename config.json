@@ -32,6 +32,7 @@
     "value_min_target_upside_pct": 20,
     "value_min_analysts": 3,
     "value_target_stale_pct": 40,
+    "list_cap": 300,
     "arrival_cooldown_days": 21,
     "alert_cap": 6
   },

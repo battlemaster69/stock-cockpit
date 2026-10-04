@@ -537,6 +537,8 @@ def setups(rows):
 
 
 VALUE_LIST = "Good score below analyst target"
+#: rows published per list: enough that a sector filter on the dashboard sees every match (sparklines come from stocks.json)
+LIST_CAP = CONFIG["setups"].get("list_cap", 300)
 
 
 SETUP_KEEP = ("sym", "name", "price", "chg1", "swing_amplitude", "swing_chop", "swing_reversals", "bounce_level",
@@ -780,7 +782,8 @@ def daily():
                     "squeeze": [x for x in sq if x["pressure"]][:CONFIG["short_interest"]["list_size"]]
                     + [x for x in sq if not x["pressure"]][:CONFIG["short_interest"]["list_size"]],
                     "regimes": [{"min": lo, "label": lb, "guide": g, "stats": s} for lo, lb, g, s in REGIMES],
-                    "setups": {k: [{f: r.get(f) for f in SETUP_KEEP} for r in v[:60]] for k, v in lists.items()},
+                    "setups": {k: [{f: r.get(f) for f in SETUP_KEEP if f != "spark"} for r in v[:LIST_CAP]] for k, v in lists.items()},
+                    "setup_counts": {k: len(v) for k, v in lists.items()},
                     "setup_settings": CONFIG["setups"], "reported": reported[:80], "rescore": stale,
                     "screener": {"snapshot": snap_date, "exported_at": screener.get("exported_at"), "count": len(scr)},
                     "universe_count": len(universe),
@@ -938,7 +941,8 @@ def live():
                            "title": f"{s} {m['chg']:+.1f}% today", "body": f"{s} at {m['price']} ({m['chg']:+.1f}% vs yesterday's close)."})
     lists = live_setups(cands, moves) if cands else {}
     alerts += arrival_alerts(arrivals(state, lists, now_et.date()))
-    out["setups"] = {k: [{f: r.get(f) for f in SETUP_KEEP if f != "spark"} for r in v[:60]] for k, v in lists.items()}
+    out["setups"] = {k: [{f: r.get(f) for f in SETUP_KEEP if f != "spark"} for r in v[:LIST_CAP]] for k, v in lists.items()}
+    out["setup_counts"] = {k: len(v) for k, v in lists.items()}
     send_alerts(alerts, state)
     out["alerts"] = state.get("recent", [])[:20]
     save(LIVE_PATH, out)

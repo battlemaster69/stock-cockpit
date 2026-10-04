@@ -289,6 +289,7 @@ function stockRow(s, main, mainLabel, extra = "", sub = null) {
 }
 /* ================= Screener setups: levels and value ================= */
 const SETS = () => (liveOn() && LIVE.setups) ? LIVE.setups : (DATA.setups || {});
+const SETCOUNT = () => ((liveOn() && LIVE.setups) ? LIVE.setup_counts : DATA.setup_counts) || {};
 const mergeRow = r => ({ ...(BY.get(r.sym) || {}), ...r });
 const scoreTag = r => r.score_overall != null ? `<span class="tag ${r.score_overall >= 60 ? "good" : r.score_overall < 40 ? "bad" : ""}">score ${Math.round(r.score_overall)}</span>` : "";
 const betaTag = r => r.beta != null ? `<span class="tag ${r.beta >= 1.5 ? "meh" : ""}">β ${r.beta.toFixed(1)}</span>` : "";
@@ -310,7 +311,7 @@ function renderLevels() {
     ${controls("levels", uniqSym([...atAll, ...mvAll]))}
     <h2>At a level now ${count(at, atAll)}</h2>
     ${at.map(r => setupRow(r, x => x.dist_to_bounce, "from level", levelSub)).join("") || noMatch("levels", "No swing name at a level right now.")}
-    <details class="panel" style="padding:10px 14px;margin-top:14px"><summary class="sub" style="cursor:pointer">Swing movers: ${movers.length}${movers.length !== mvAll.length ? ` of ${mvAll.length}` : ""} names that oscillate (a lasting property; watch them reach a level)</summary><div style="margin-top:10px">
+    <details class="panel" style="padding:10px 14px;margin-top:14px"><summary class="sub" style="cursor:pointer">Swing movers: ${movers.length}${movers.length !== mvAll.length ? ` of ${mvAll.length}` : ""} names that oscillate (a lasting property; watch them reach a level)${(SETCOUNT()["Swing · movers"] || 0) > mvAll.length ? `. The ${mvAll.length} biggest swingers of ${SETCOUNT()["Swing · movers"]}` : ""}</summary><div style="margin-top:10px">
       ${movers.map(r => setupRow(r, x => x.dist_to_bounce, "from nearest level", x => `Swings ${p100(x.swing_amplitude, 0).replace("+", "")} a week, ${x.swing_reversals ?? "–"} turns in six months` + (x.bounce_level ? ` · nearest level ${price(x.bounce_level)} (turned ${x.bounce_touches}×)` : " · no level within 15%"))).join("")}</div></details>`;
 }
 const targetTxt = x => x.target_mean ? `Analyst target ${price(x.target_mean)}${x.analyst_count ? ` (${Math.round(x.analyst_count)} analysts)` : ""}` : "No analyst target";
