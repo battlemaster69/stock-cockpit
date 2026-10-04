@@ -19,6 +19,21 @@
   "earnings_days": 14,
   "short_interest": {"min_days_to_cover": 5, "list_size": 60},
 
+  "setups": {
+    "_note": "The Screener's event lists, same rules as its lenses.py/notify.py, re-priced live. Scores come from docs/screener.json (tools/export_screener.py on the laptop).",
+    "swing_min_amplitude": 0.07,
+    "swing_min_chop": 0.55,
+    "swing_min_reversals": 8,
+    "min_dollar_volume": 20000000,
+    "at_level_pct": 4,
+    "dip_sigma": -1.0,
+    "z_distress": 1.81,
+    "value_min_score": 60,
+    "value_near_buy_pct": 5,
+    "arrival_cooldown_days": 21,
+    "alert_cap": 6
+  },
+
   "premarket": {
     "_note": "Pre-market scan, 4:00-9:30 New York, every 15 minutes: alert on stocks up this much vs yesterday's close with at least this much traded (full-market data, 15 minutes delayed).",
     "alert_pct": 3,

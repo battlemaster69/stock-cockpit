@@ -9,6 +9,8 @@ Not financial advice: it informs decisions and never trades.
 | Tab | What | Refreshed |
 |---|---|---|
 | Header | **Market regime gauge** (0-100): SPY trend vs its 50/200-day averages, breadth (share of ~1,350 liquid stocks above their 50-day average, new highs vs lows), VIX level and curve. Plus SPY/QQQ/IWM, VIX and breadth cards | Daily after the close; live every 15 min in market hours |
+| Levels | The Screener's swing screen, live: high-beta names that oscillate (7%+ weekly swings, choppy, $20M+ a day) within 4% of a level they've turned at 3+ times, with what followed past touches, the ceiling overhead and beta | Daily + re-priced every 15 min |
+| Value | Your Screener's scores re-priced live: "Good score at buy price" (score 60+, at or near the DCF buy price, multiples agree), "Quality dip" (down 1+ standard deviation this week for that stock, best business first), and earnings reported since the score was computed (surprise, price reaction, rescore list) | Daily + re-priced every 15 min |
 | Market | What the score is made of, how each regime behaved 2016-2026, sector ETFs ranked vs SPY | Daily + live |
 | Watchlist | Your tickers: live price, trend, strength vs SPY, next earnings, days to cover | Live every 15 min |
 | Earnings | Next 14 days for every liquid stock (Nasdaq calendar), with time and EPS estimate | Daily |
@@ -30,6 +32,16 @@ Not financial advice: it informs decisions and never trades.
    - daily: `https://api.github.com/repos/YOUR-USERNAME/stock-cockpit/actions/workflows/daily.yml/dispatches`, Monday-Friday at 21:40 UTC, body `{"ref":"main","inputs":{"auto":"true"}}`
    - live: same URL with `live.yml`, every 15 minutes, Monday-Friday 13:00-21:00 UTC, same body. Outside market hours (and on holidays) the scan exits after asking Alpaca whether the market is open.
 5. **Phone**: open the Pages link and add it to your home screen. To edit the watchlist from the phone, add this repo to your fine-grained GitHub token (Contents: Read and write) and paste the token in the dashboard's settings.
+
+## Screener scores (laptop, after each Screener refresh)
+
+The fundamentals stay in the Screener; the Cockpit only re-prices them. After the Screener rebuilds its snapshot:
+
+    python tools/export_screener.py --push
+
+It reads `Stock Fundamental Analysis v3/data/snapshot.parquet` read-only and publishes scores, verdicts and fair-value/buy-below prices to `docs/screener.json`. Stocks that report earnings after their score was computed are listed in `docs/rescore.txt`, which the Screener's refresh can read (`python refresh_cli.py --file <cockpit>/docs/rescore.txt`).
+
+Alerts follow the Screener's `notify.py` rules: only new arrivals on "Swing · at a level", "Quality dip" and "Good score at buy price"; the first run seeds silently; a name off a list for 21 days can alert again.
 
 ## Customise (`config.json`)
 Universe filters, indices and sector ETFs, earnings window, short-interest thresholds, alert levels.

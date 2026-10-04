@@ -222,10 +222,49 @@ function header() {
 function stockRow(s, main, mainLabel, extra = "", sub = null) {
   const l = lv(s.sym), chg = l ? l.chg : s.chg1, p = l?.price ?? s.price;
   const e = s.earn ? `<span class="tag meh">earnings ${dateShort(s.earn[0])}</span>` : "";
-  return `<button class="row" data-sym="${esc(s.sym)}"><span><span class="sym">${esc(s.sym)}</span>${WATCH.includes(s.sym) ? ` <span class="meh">★</span>` : ""}${e}${extra}
+  return `<button class="row" data-sym="${esc(s.sym)}"><span><span class="sym">${esc(s.sym)}</span>${WATCH.includes(s.sym) ? ` <span class="meh">★</span>` : ""}${scoreTag(s)}${e}${extra}
       <span class="sub">${sub ?? `${price(p)} · <span class="${tone(chg)}">${pct(chg)}</span> ${l ? "today (live)" : "last session"} · ${s.vs50 > 0 ? "above" : "below"} 50d, ${s.vs200 > 0 ? "above" : "below"} 200d`}</span></span>
     <span class="mini">${spark(s.spark, "var(--ink)", 26)}</span>
     <span><span class="big ${tone(main)}">${main == null ? "–" : pct(main)}</span><span class="sub" style="text-align:right">${mainLabel}</span></span></button>`;
+}
+/* ================= Screener setups: levels and value ================= */
+const SETS = () => (liveOn() && LIVE.setups) ? LIVE.setups : (DATA.setups || {});
+const mergeRow = r => ({ ...(BY.get(r.sym) || {}), ...r });
+const scoreTag = r => r.score_overall != null ? `<span class="tag ${r.score_overall >= 60 ? "good" : r.score_overall < 40 ? "bad" : ""}">score ${Math.round(r.score_overall)}</span>` : "";
+const betaTag = r => r.beta != null ? `<span class="tag ${r.beta >= 1.5 ? "meh" : ""}">β ${r.beta.toFixed(1)}</span>` : "";
+const p100 = (v, d = 1) => v == null ? "–" : pct(v * 100, d);
+function setupRow(r, main, label, sub, extra = "") {
+  r = mergeRow(r);
+  return `<button class="row" data-sym="${esc(r.sym)}"><span><span class="sym">${esc(r.sym)}</span>${WATCH.includes(r.sym) ? ` <span class="meh">★</span>` : ""}${betaTag(r)}${scoreTag(r)}${r.earn ? `<span class="tag meh">earnings ${dateShort(r.earn[0])}</span>` : ""}${extra}
+      <span class="sub">${sub(r)}</span></span><span class="mini">${spark(r.spark, "var(--ink)", 26)}</span>
+    <span><span class="big ${main(r) >= 0 ? "" : ""}">${p100(main(r))}</span><span class="sub" style="text-align:right">${label}</span></span></button>`;
+}
+const levelSub = r => `Level ${price(r.bounce_level)}, turned ${r.bounce_touches}× · `
+  + (r.bounce_resolved_10d ? `after ${r.bounce_resolved_10d} past touches the next 2 weeks: median ${p100(r.bounce_median_10d)}, ${Math.round((r.bounce_hit_rate_10d || 0) * 100)}% up` : "no resolved touches yet")
+  + (r.resistance_level ? ` · ceiling ${price(r.resistance_level)} (${p100(r.room_to_resistance, 0)} room)` : "") + ` · swings ${p100(r.swing_amplitude, 0).replace("+", "")} a week`;
+function renderLevels() {
+  const S = SETS(), st = DATA.setup_settings || {}, at = S["Swing · at a level"] || [], movers = S["Swing · movers"] || [];
+  return `<p class="hint" style="margin-top:14px"><b>High-beta names at levels they've respected</b>, the Screener's swing screen running ${liveOn() ? "live (prices every 15 minutes)" : "on the latest close"}. A name qualifies when it swings ${Math.round((st.swing_min_amplitude || .07) * 100)}%+ in a typical week, keeps reversing rather than trending, trades $${((st.min_dollar_volume || 2e7) / 1e6).toFixed(0)}M+ a day, and sits within ${st.at_level_pct || 4}% of a price it has turned at 3+ times in two years. Big number: distance from that level (negative = just under it). β = beta to SPY over a year.</p>
+    <p class="hint"><b>Read the count before the median.</b> These are 3–6 touches, and a level that broke badly stops getting touched, so the levels with the longest records are the ones that have held so far. A level is a place to look, not a reason. A close below it is the stop most traders use.</p>
+    <h2>At a level now <span class="sub" style="display:inline">${at.length}</span></h2>
+    ${at.map(r => setupRow(r, x => x.dist_to_bounce, "from level", levelSub)).join("") || `<p class="empty" style="padding:14px">No swing name at a level right now.</p>`}
+    <details class="panel" style="padding:10px 14px;margin-top:14px"><summary class="sub" style="cursor:pointer">Swing movers: ${movers.length} names that oscillate (a lasting property; watch them reach a level)</summary><div style="margin-top:10px">
+      ${movers.map(r => setupRow(r, x => x.dist_to_bounce, "from nearest level", x => `Swings ${p100(x.swing_amplitude, 0).replace("+", "")} a week, ${x.swing_reversals ?? "–"} turns in six months` + (x.bounce_level ? ` · nearest level ${price(x.bounce_level)} (turned ${x.bounce_touches}×)` : " · no level within 15%"))).join("")}</div></details>`;
+}
+function renderValue() {
+  const S = SETS(), st = DATA.setup_settings || {}, buy = S["Good score at buy price"] || [], dips = S["Quality dip"] || [], rep = DATA.reported || [], sc = DATA.screener || {};
+  return `<p class="hint" style="margin-top:14px"><b>Good businesses at a good price</b>, from your Screener's scores (snapshot ${esc(sc.snapshot || "–")}, ${sc.count || 0} stocks) re-priced ${liveOn() ? "live every 15 minutes" : "at the latest close"}. The scores themselves only change when you re-export them from the Screener; everything that depends on price updates here.</p>
+    <h2>Good score at buy price <span class="sub" style="display:inline">${buy.length}</span></h2>
+    <p class="hint">Overall score ${st.value_min_score || 60}+, the price at, below or within ${st.value_near_buy_pct || 5}% of the Screener's DCF buy-below price, <i>and</i> its multiples-based value verdict agrees (at buy price, or cheap on one or both). Best business first. Big number: price vs buy price (negative = below it). <span class="tag meh">check model</span> = fair value over 3× the price, usually a cash-flow measure that doesn't suit the business (lenders, spin-offs); these are never pushed as alerts.</p>
+    ${buy.map(r => setupRow(r, x => x.to_buy, "vs buy price", x => `Buy below ${price(x.buy_below)} · fair ${price(x.fair_value_per_share)} (${p100(x.upside_to_fair, 0)}) · value: ${esc(x.v_value || "–")} · quality: ${esc(x.v_quality || "–")}`, r.model_check ? `<span class="tag meh">check model</span>` : "")).join("") || `<p class="empty" style="padding:14px">Nothing at a buy price right now.</p>`}
+    <h2>Quality dip <span class="sub" style="display:inline">${dips.length}</span></h2>
+    <p class="hint">The Screener's "Dip · liquid": down more than ${Math.abs(st.dip_sigma || 1)} standard deviation this week <i>for that stock</i> (so a utility and a chip stock are judged on their own normal), $${((st.min_dollar_volume || 2e7) / 1e6).toFixed(0)}M+ a day, not in financial distress, clean enough data. Best business first, since on a list of fallers the deepest fall is usually the worst company. Half of these are news you haven't read yet.</p>
+    ${dips.map(r => setupRow(r, x => x.ret_1w, "this week", x => `${x.dip_sigma_1w != null ? x.dip_sigma_1w.toFixed(1) : "–"} standard deviations for this stock · value: ${esc(x.v_value || "–")} · quality: ${esc(x.v_quality || "–")}` + (x.bounce_level && Math.abs(x.dist_to_bounce) <= .05 ? ` · near a level it turned at ${x.bounce_touches}×` : ""))).join("") || `<p class="empty" style="padding:14px">No quality dips right now.</p>`}
+    <h2>Reported since the Screener scored them</h2>
+    <p class="hint">Earnings released after the score was computed: the score predates this news. Big moves either way are the ones to re-check. These tickers are listed in <code>docs/rescore.txt</code> for your next Screener refresh; then re-export the scores.</p>
+    <div class="panel scroll"><table><thead><tr><th>Stock</th><th>Reported</th><th>EPS vs est</th><th>Surprise</th><th>Price reaction</th></tr></thead><tbody>
+      ${rep.map(x => `<tr class="click" data-sym="${esc(x.sym)}"><td><b>${esc(x.sym)}</b>${x.score != null ? ` <span class="sub" style="display:inline">score ${Math.round(x.score)}</span>` : ""}</td><td>${dateShort(x.date)}</td>
+        <td>${x.eps != null ? "$" + x.eps.toFixed(2) : "–"} / ${x.eps_est != null ? "$" + x.eps_est.toFixed(2) : "–"}</td><td class="${tone(x.surprise)}">${pct(x.surprise)}</td><td class="${tone(x.reaction)}">${pct(x.reaction)}</td></tr>`).join("") || `<tr><td colspan="5">No reports since the snapshot.</td></tr>`}</tbody></table></div>`;
 }
 function renderPremarket() {
   const P = LIVE?.premarket, st = P?.settings || { alert_pct: 3, min_dollar_volume: 1e6 };
@@ -303,7 +342,7 @@ function renderAlerts() {
   return `<h2>Recent alerts</h2><p class="hint">The same alerts pushed to your phone through ntfy.</p>
     <div class="panel">${a.map(x => `<div class="alert"><b class="${x.level === "hot" ? "bad" : "good"}">${esc(x.title)}</b><p>${esc(x.body)}</p><p>${ago(new Date(x.ts * 1000))}</p></div>`).join("") || `<p class="empty">No alerts yet.</p>`}</div>`;
 }
-const TABS = [["market", "Market", renderMarket], ["premarket", "Pre-market", renderPremarket], ["watch", "Watchlist", renderWatch], ["earnings", "Earnings", renderEarnings],
+const TABS = [["market", "Market", renderMarket], ["levels", "Levels", renderLevels], ["value", "Value", renderValue], ["premarket", "Pre-market", renderPremarket], ["watch", "Watchlist", renderWatch], ["earnings", "Earnings", renderEarnings],
   ["shorts", "Short interest", renderShorts], ["stocks", "Stocks", renderStocks], ["alerts", "Alerts", renderAlerts]];
 
 /* ================= detail sheet ================= */
@@ -327,6 +366,24 @@ function detail(s) {
         <div><span>EPS estimate</span><b>${e?.eps_est != null ? "$" + e.eps_est.toFixed(2) + ` (${e.ests} analysts)` : "–"}</b></div>
         <div><span>Days to cover</span><b>${s.dtc != null ? s.dtc.toFixed(1) : "–"}</b></div><div><span>Short interest change</span><b>${pct(s.si_chg, 0)}</b></div></div>
       ${sq?.pressure ? `<p class="hint"><span class="tag good">shorts under pressure</span> crowded short with a rising price.</p>` : ""}
+      ${s.swing_note || s.bounce_level || s.swing_amplitude != null ? `<h3>Levels</h3><div class="stats">
+        <div><span>Bounce level</span><b>${s.bounce_level ? `${price(s.bounce_level)} (turned ${s.bounce_touches}×)` : "none within 15%"}</b></div>
+        <div><span>Distance</span><b>${p100(s.dist_to_bounce)}</b></div>
+        <div><span>Next 2 weeks after past touches</span><b>${s.bounce_resolved_10d ? `${p100(s.bounce_median_10d)} median, ${Math.round(s.bounce_hit_rate_10d * 100)}% up (${s.bounce_resolved_10d})` : "–"}</b></div>
+        <div><span>Ceiling overhead</span><b>${s.resistance_level ? `${price(s.resistance_level)} (${p100(s.room_to_resistance, 0)})` : s.clear_of_resistance ? "clear of all" : "–"}</b></div>
+        <div><span>Typical weekly swing</span><b>${s.swing_amplitude != null ? (s.swing_amplitude * 100).toFixed(1) + "%" : "–"}</b></div>
+        <div><span>Beta to SPY (1 year)</span><b>${s.beta != null ? s.beta.toFixed(2) : "–"}</b></div></div>
+        ${s.swing_note ? `<p class="hint">${esc(s.swing_note)}.</p>` : ""}` : ""}
+      ${s.score_overall != null ? `<h3>Screener</h3><div class="stats">
+        <div><span>Overall score</span><b class="${s.score_overall >= 60 ? "good" : s.score_overall < 40 ? "bad" : ""}">${Math.round(s.score_overall)} / 100</b></div>
+        <div><span>Value · quality</span><b>${esc(s.v_value || "–")} · ${esc(s.v_quality || "–")}</b></div>
+        <div><span>Buy below</span><b>${price(s.buy_below)}${s.to_buy != null ? ` <span class="${s.to_buy <= 0 ? "good" : ""}">(${p100(s.to_buy)} now)</span>` : ""}</b></div>
+        <div><span>Fair value</span><b>${price(s.fair_value_per_share)}${s.upside_to_fair != null ? ` (${p100(s.upside_to_fair, 0)})` : ""}</b></div>
+        <div><span>Growth · balance sheet</span><b>${esc(s.v_growth || "–")} · ${esc(s.v_balance_sheet || "–")}</b></div>
+        <div><span>Moat · data</span><b>${esc(s.v_moat || "–")} · ${esc(s.v_data || "–")}</b></div>
+        ${["value", "growth", "quality", "financial_strength", "cash_quality", "momentum", "moat"].map(a => s["score_" + a] != null ? `<div><span>${a.replace("_", " ")}</span><b>${Math.round(s["score_" + a])}</b></div>` : "").join("")}</div>
+        ${s.why_value ? `<p class="hint">Value: ${esc(s.why_value)}.</p>` : ""}
+        ${(DATA.reported || []).some(x => x.sym === s.sym && x.stale) ? `<p class="meh">Reported earnings after this score was computed: re-check it in the Screener.</p>` : ""}` : ""}
       <div class="stats" style="margin-top:16px"><div><a href="https://www.tradingview.com/symbols/${encodeURIComponent(s.sym.replace(".", "-"))}/" target="_blank" rel="noopener">TradingView</a></div>
         <div><a href="https://finviz.com/quote.ashx?t=${encodeURIComponent(s.sym.replace(".", "-"))}" target="_blank" rel="noopener">Finviz</a></div></div>
     </div>`;

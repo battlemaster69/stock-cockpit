@@ -31,11 +31,14 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 
+import swing  # ported from the Screener: swing amplitude, bounce levels and their track record
+
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = json.loads((ROOT / "config.json").read_text())
 DOCS, DATA = ROOT / "docs", ROOT / "data"
 OUT_PATH, STOCKS_PATH, LIVE_PATH = DOCS / "data.json", DOCS / "stocks.json", DOCS / "live.json"
 WATCH_PATH = DOCS / "watchlist.json"
+SCREENER_PATH, RESCORE_PATH = DOCS / "screener.json", DOCS / "rescore.txt"
 STATE_PATH, CACHE_PATH = DATA / "state.json", DATA / "cache.json"
 DATA.mkdir(exist_ok=True)  # git doesn't keep empty folders
 ET = ZoneInfo("America/New_York")
@@ -371,13 +374,60 @@ def sector_table(f):
     return sorted(out, key=lambda x: -(x["rs20"] or 0))
 
 
+#: Screener fields carried onto each stock row (docs/screener.json, from tools/export_screener.py).
+SCREENER_FIELDS = ("score_overall", "score_value", "score_growth", "score_quality", "score_financial_strength",
+                   "score_cash_quality", "score_momentum", "score_moat", "axes_scored", "v_value", "v_quality", "v_growth",
+                   "v_balance_sheet", "v_data", "v_moat", "v_expectations", "z_score", "z_zone", "m_flag",
+                   "fair_value_per_share", "buy_below", "epv_per_share", "valuation_basis", "why_value",
+                   "last_earnings_date", "sector", "industry")
+#: swing.analyse() outputs kept for the dashboard and the live re-pricing.
+SWING_FIELDS = ("swing_amplitude", "swing_chop", "swing_reversals", "bounce_level", "bounce_touches", "dist_to_bounce",
+                "bounce_median_10d", "bounce_hit_rate_10d", "bounce_resolved_10d", "bounce_median_21d",
+                "bounce_hit_rate_21d", "bounce_resolved_21d", "bounce_last_touch", "resistance_level",
+                "resistance_touches", "room_to_resistance", "clear_of_resistance", "swing_note")
+
+
+def tactical_measures(cs, vs, spy_ret):
+    """The Screener's tactical.py measures, on Alpaca's split- and dividend-adjusted daily bars: the week's move
+    in units of the stock's own daily volatility (so a 5% fall in a utility and in a chip stock aren't treated
+    alike), where it sits in its year, median dollar volume, and beta to SPY over a year."""
+    out = {}
+    if len(cs) < 70:
+        return out
+    daily = cs.pct_change().dropna()
+    sigma = float(daily.iloc[-60:].std())
+    r1w, r1m = float(cs.iloc[-1] / cs.iloc[-6] - 1), float(cs.iloc[-1] / cs.iloc[-22] - 1)
+    out.update({"ret_1w": r1w, "ret_1m": r1m, "sigma_daily": sigma, "close_5ago": float(cs.iloc[-6]),
+                "dip_sigma_1w": r1w / (sigma * math.sqrt(5)) if sigma else None,
+                "dip_sigma_1m": r1m / (sigma * math.sqrt(21)) if sigma else None})
+    year = cs.iloc[-252:]
+    hi, lo = float(year.max()), float(year.min())
+    out["range_position_52w"] = (float(cs.iloc[-1]) - lo) / (hi - lo) if hi > lo else None
+    streak = 0
+    for ch in reversed(daily.tolist()):
+        if ch >= 0:
+            break
+        streak += 1
+    out["down_days"] = streak
+    dv = (cs * vs).dropna()
+    out["dollar_volume_20d"] = float(dv.iloc[-20:].median()) if len(dv) else None  # median, as the Screener's lenses use
+    base = vs.iloc[-60:].mean()
+    out["rel_volume"] = float(vs.iloc[-5:].mean() / base) if base else None
+    both = pd.concat([daily, spy_ret], axis=1, join="inner").dropna().iloc[-252:]
+    if len(both) > 120 and both.iloc[:, 1].var() > 0:
+        out["beta"] = float(both.iloc[:, 0].cov(both.iloc[:, 1]) / both.iloc[:, 1].var())
+    return out
+
+
 @module("Stock table")
-def stock_table(f, universe):
-    """One row per universe stock: trend, momentum vs SPY, volatility and liquidity (the Stocks tab and watchlist)."""
+def stock_table(f, universe, scr):
+    """One row per stock: trend, momentum vs SPY, volatility and liquidity, the Screener's tactical and swing
+    measures, and its scores re-priced at the latest close."""
     c, h, l, v = f["c"], f["h"], f["l"], f["v"]
     spy = c["SPY"].dropna()
     spy20, spy60 = pct(spy.iloc[-1], spy.iloc[-21]), pct(spy.iloc[-1], spy.iloc[-61])
-    rows = []
+    spy_ret = spy.pct_change().dropna()
+    rows, fails = [], 0
     for u in universe:
         s = u["sym"]
         if s not in c:
@@ -389,35 +439,170 @@ def stock_table(f, universe):
         st = series_stats(cs)
         tr = pd.concat([hs - ls, (hs - cs.shift()).abs(), (ls - cs.shift()).abs()], axis=1).max(axis=1)
         atr = tr.rolling(14).mean().iloc[-1]
-        rows.append({"sym": s, "name": u["name"], "exch": u["exch"], "price": st["price"], "prev": r2(cs.iloc[-2], 4),
-                     "chg1": st["chg1"], "chg5": st["chg5"], "chg20": st["chg20"], "vs50": st["vs50"], "vs200": st["vs200"],
-                     "from_high": st["from_high"], "rs20": r2((st["chg20"] or 0) - (spy20 or 0)),
-                     "rs60": r2(pct(cs.iloc[-1], cs.iloc[-61]) - (spy60 or 0)) if len(cs) > 61 else None,
-                     "atr_pct": r2(atr / cs.iloc[-1] * 100), "dv20": round(float((cs * vs).iloc[-20:].mean())),
-                     "rvol": r2(vs.iloc[-1] / vs.iloc[-21:-1].mean()) if vs.iloc[-21:-1].mean() else None,
-                     "spark": [r2(x, 4) for x in cs.iloc[-60:].tolist()]})
+        row = {"sym": s, "name": u["name"], "exch": u["exch"], "price": st["price"], "prev": r2(cs.iloc[-2], 4),
+               "chg1": st["chg1"], "chg5": st["chg5"], "chg20": st["chg20"], "vs50": st["vs50"], "vs200": st["vs200"],
+               "from_high": st["from_high"], "rs20": r2((st["chg20"] or 0) - (spy20 or 0)),
+               "rs60": r2(pct(cs.iloc[-1], cs.iloc[-61]) - (spy60 or 0)) if len(cs) > 61 else None,
+               "atr_pct": r2(atr / cs.iloc[-1] * 100), "dv20": round(float((cs * vs).iloc[-20:].mean())),
+               "rvol": r2(vs.iloc[-1] / vs.iloc[-21:-1].mean()) if vs.iloc[-21:-1].mean() else None,
+               "spark": [float(f"{x:.4g}") for x in cs.iloc[-60::2].tolist()]}  # 30 points, 4 significant figures: keeps the file phone-sized
+        try:
+            row.update({k: (r2(x, 4) if isinstance(x, float) else x) for k, x in tactical_measures(cs, vs, spy_ret).items()})
+            frame = pd.DataFrame({"High": hs, "Low": ls, "Close": cs})
+            sw = swing.analyse(frame, cs)  # bars are already adjusted, so the Screener's raw-to-adjusted scale is 1
+            row.update({k: (r2(sw[k], 4) if isinstance(sw[k], float) else sw[k]) for k in SWING_FIELDS if k in sw})
+        except Exception:  # noqa: BLE001  one odd series must not cost the table
+            fails += 1
+        rec = scr.get(s)
+        if rec:
+            row.update({k: rec[k] for k in SCREENER_FIELDS if k in rec})
+            row["name"] = rec.get("name") or row["name"]
+            p = row["price"]
+            if rec.get("fair_value_per_share") and p:
+                row["upside_to_fair"] = r2(rec["fair_value_per_share"] / p - 1, 4)
+            if rec.get("buy_below") and p:
+                row["to_buy"] = r2(p / rec["buy_below"] - 1, 4)  # <= 0 means at or below the Screener's buy price
+        rows.append(row)
+    if fails:
+        log(f"stock table: {fails} series skipped by the swing/tactical measures")
     return rows
+
+
+def setups(rows):
+    """The Screener's event lists, with its own gates (lenses.py): blanks pass a numeric gate unless the field is
+    required, as there. Returns {list name: rows}."""
+    st = CONFIG["setups"]
+    g = lambda r, k: r.get(k)  # noqa: E731
+    amp, chop, mdv = st["swing_min_amplitude"], st["swing_min_chop"], st["min_dollar_volume"]
+    swing_ok = lambda r: g(r, "swing_amplitude") is not None and r["swing_amplitude"] >= amp \
+        and (g(r, "swing_chop") is None or r["swing_chop"] >= chop) and (g(r, "dollar_volume_20d") or 0) >= mdv  # noqa: E731
+    movers = [r for r in rows if swing_ok(r) and (g(r, "swing_reversals") is None or r["swing_reversals"] >= st["swing_min_reversals"])]
+    at_level = [r for r in rows if swing_ok(r) and (g(r, "bounce_touches") or 0) >= 3 and (g(r, "bounce_resolved_10d") or 0) >= 3
+                and g(r, "dist_to_bounce") is not None and abs(r["dist_to_bounce"]) <= st["at_level_pct"] / 100]
+    dips = [r for r in rows if r.get("v_data") in ("clean", "caution", "check first") and g(r, "dip_sigma_1w") is not None
+            and r["dip_sigma_1w"] <= st["dip_sigma"] and (g(r, "dollar_volume_20d") or 0) >= mdv
+            and (g(r, "z_score") is None or r["z_score"] >= st["z_distress"])]
+    # two independent reads must agree: the DCF buy price and the multiples-based value verdict. The DCF alone
+    # throws up model artefacts (lenders, spin-offs: fair value 5-10x the price), and those would top the list.
+    value = [r for r in rows if (g(r, "score_overall") or 0) >= st["value_min_score"] and g(r, "to_buy") is not None
+             and r["to_buy"] <= st["value_near_buy_pct"] / 100 and r.get("v_data") in ("clean", "caution", "check first")
+             and r.get("v_value") in ("at buy price", "cheap on both", "cheap on one")]
+    for r in value:
+        r["model_check"] = (r.get("upside_to_fair") or 0) > 2  # fair value over 3x the price: check it in the Screener
+    return {
+        "Swing · at a level": sorted(at_level, key=lambda r: -r["swing_amplitude"]),  # by amplitude, as the Screener: not by the small-sample hit rate
+        "Swing · movers": sorted(movers, key=lambda r: -r["swing_amplitude"]),
+        "Quality dip": sorted(dips, key=lambda r: (-(r.get("score_overall") or -1), r["dip_sigma_1w"])),  # best business first
+        "Good score at buy price": sorted(value, key=lambda r: (r["model_check"], -(r.get("score_overall") or 0))),  # best business first
+    }
+
+
+SETUP_KEEP = ("sym", "name", "price", "chg1", "swing_amplitude", "swing_chop", "swing_reversals", "bounce_level",
+              "bounce_touches", "dist_to_bounce", "bounce_median_10d", "bounce_hit_rate_10d", "bounce_resolved_10d",
+              "bounce_median_21d", "bounce_hit_rate_21d", "resistance_level", "room_to_resistance", "dip_sigma_1w",
+              "ret_1w", "sigma_daily", "close_5ago", "dollar_volume_20d", "beta", "atr_pct", "score_overall", "v_value",
+              "v_quality", "v_data", "z_score", "buy_below", "fair_value_per_share", "to_buy", "upside_to_fair", "earn", "model_check",
+              "vs50", "vs200", "spark")
+
+
+def arrivals(state, lists, today):
+    """notify.py's rule: only new names alert; a name off a list for `arrival_cooldown_days` can alert again; the
+    first sight of a list seeds it silently instead of firing everything at once."""
+    keep = timedelta(days=CONFIG["setups"]["arrival_cooldown_days"])
+    st, out = state.setdefault("arrivals", {}), {}
+    for name, rows in lists.items():
+        if name == "Swing · movers":  # a lasting property of a name, not an event
+            continue
+        first = name not in st
+        known = {k: v for k, v in (st.get(name) or {}).items() if date.fromisoformat(v) >= today - keep}
+        fresh = [r for r in rows if r["sym"] not in known]
+        for r in rows:
+            known[r["sym"]] = today.isoformat()
+        st[name] = known
+        if fresh and not first:
+            out[name] = fresh
+    return out
+
+
+def arrival_alerts(new):
+    cap = CONFIG["setups"]["alert_cap"]
+    lines = {
+        "Swing · at a level": lambda r: f'{r["sym"]} {abs(r["dist_to_bounce"]) * 100:.1f}% {"above" if r["dist_to_bounce"] >= 0 else "below"} '
+                                        f'${r["bounce_level"]:.2f} (turned {r["bounce_touches"]}x; after {r["bounce_resolved_10d"]} touches '
+                                        f'2 wk median {r["bounce_median_10d"] * 100:+.1f}%, {r["bounce_hit_rate_10d"] * 100:.0f}% up; swings {r["swing_amplitude"] * 100:.0f}%/wk)',
+        "Quality dip": lambda r: f'{r["sym"]} score {r.get("score_overall") or 0:.0f}, {r["ret_1w"] * 100:+.1f}% this week '
+                                 f'({r["dip_sigma_1w"]:+.1f} sd), value: {r.get("v_value") or "?"}',
+        "Good score at buy price": lambda r: f'{r["sym"]} score {r.get("score_overall") or 0:.0f} at ${r["price"]:.2f}, '
+                                             f'buy below ${r["buy_below"]:.2f}, fair ${r.get("fair_value_per_share") or 0:.2f}',
+    }
+    out = []
+    for name, rows in new.items():
+        rows = [r for r in rows if not r.get("model_check")]  # a likely model artefact is listed, never pushed
+        if not rows:
+            continue
+        shown = rows[:cap]
+        out.append({"key": f"arr:{name}:{NOW_TS}", "level": "good", "title": f"{name}: {len(rows)} new",
+                    "body": "\n".join(lines[name](r) for r in shown) + (f"\n...and {len(rows) - cap} more" if len(rows) > cap else "")})
+    return out
 
 
 # ------------------------------------------------------------------ catalysts
 
 @module("Earnings calendar")
-def earnings_calendar(universe_syms):
-    """Nasdaq's earnings calendar (free, no key) for the next N days, kept to the universe."""
+def earnings_calendar(universe_syms, cache, back_days=0):
+    """Nasdaq's earnings calendar (free, no key): the next N days, plus `back_days` of reports already out (those
+    rows carry the actual EPS and the surprise). Past days are cached; they don't change."""
     keep, out = set(universe_syms), []
-    for k in range(CONFIG.get("earnings_days", 14) + 1):
-        d = (NOW + timedelta(days=k)).date()
+    past = cache.setdefault("cal", {})
+    today = NOW.astimezone(ET).date()
+    for k in range(-back_days, CONFIG.get("earnings_days", 14) + 1):
+        d = today + timedelta(days=k)
         if d.weekday() >= 5:
             continue
-        data = get_json("https://api.nasdaq.com/api/calendar/earnings", params={"date": d.isoformat()}, headers=BROWSER) or {}
-        for r in (data.get("data") or {}).get("rows") or []:
+        if k < 0 and d.isoformat() in past:
+            rows = past[d.isoformat()]
+        else:
+            data = get_json("https://api.nasdaq.com/api/calendar/earnings", params={"date": d.isoformat()}, headers=BROWSER) or {}
+            rows = (data.get("data") or {}).get("rows") or []
+            time.sleep(0.6)
+            if k < 0:
+                past[d.isoformat()] = [r for r in rows if (r.get("symbol") or "").strip().upper() in keep]
+        for r in rows:
             sym = (r.get("symbol") or "").strip().upper()
             if sym in keep:
                 out.append({"sym": sym, "date": d.isoformat(), "name": r.get("name"),
                             "time": {"time-pre-market": "before open", "time-after-hours": "after close"}.get(r.get("time"), ""),
                             "eps_est": fnum(r.get("epsForecast")), "ests": fnum(r.get("noOfEsts")),
-                            "last_eps": fnum(r.get("lastYearEPS")), "mcap": fnum(r.get("marketCap"))})
-        time.sleep(0.6)
+                            "last_eps": fnum(r.get("lastYearEPS")), "mcap": fnum(r.get("marketCap")),
+                            "eps": fnum(r.get("eps")), "surprise": fnum(r.get("surprise"))})
+    cutoff = (today - timedelta(days=45)).isoformat()
+    cache["cal"] = {k: v for k, v in past.items() if k >= cutoff}
+    return out
+
+
+def earnings_feedback(reported, scr, f, snapshot_date):
+    """Reports released after the Screener scored a stock: the surprise, how the price took it, and a flag that the
+    score predates the news. The flagged tickers go to docs/rescore.txt for the next Screener refresh."""
+    c = f["c"] if f is not None else None
+    out = []
+    for e in reported:
+        rec = scr.get(e["sym"])
+        if not rec or e.get("eps") is None:
+            continue
+        scored = rec.get("last_earnings_date") or snapshot_date or ""
+        reaction = None
+        if c is not None and e["sym"] in c:
+            cs = c[e["sym"]].dropna()
+            idx = [d.strftime("%Y-%m-%d") for d in cs.index]
+            # before the open: the report day's move; after the close (or unknown time): the next session's move
+            day = e["date"] if e["time"] == "before open" else next((d for d in idx if d > e["date"]), None)
+            if day in idx and idx.index(day) > 0:
+                i = idx.index(day)
+                reaction = r2((cs.iloc[i] / cs.iloc[i - 1] - 1) * 100)
+        out.append({"sym": e["sym"], "name": rec.get("name"), "date": e["date"], "time": e["time"], "eps": e["eps"],
+                    "eps_est": e["eps_est"], "surprise": e.get("surprise"), "reaction": reaction,
+                    "score": rec.get("score_overall"), "v_value": rec.get("v_value"), "stale": e["date"] > scored[:10]})
+    out.sort(key=lambda x: x["date"], reverse=True)
     return out
 
 
@@ -484,15 +669,28 @@ def daily():
     universe = build_universe(cache) or (cache.get("universe") or {}).get("symbols") or []
     syms = [u["sym"] for u in universe]
     wl = watchlist()
-    log(f"universe {len(universe)} stocks, watchlist {len(wl)}")
-    bars = daily_bars(sorted(set(syms + ETFS + wl)), 400) if universe else {}
+    screener = load(SCREENER_PATH, {}) or {}
+    scr = screener.get("stocks") or {}
+    snap_date = (screener.get("snapshot_built_at") or "")[:10]
+    log(f"universe {len(universe)} stocks, watchlist {len(wl)}, Screener scores {len(scr)} (snapshot {snap_date or 'none'})")
+    # ~2.2 years: the swing levels look back two years and need the outcome of each touch after it
+    bars = daily_bars(sorted(set(syms + ETFS + wl + list(scr))), 800) if universe else {}
     f = frames(bars) if bars else None
     vixd = fetch_vix()
     regime = market_regime(f, vixd, syms) if f is not None else None
     sectors = sector_table(f) if f is not None else None
-    extra = [{"sym": s, "name": s, "exch": ""} for s in wl if s not in set(syms)]
-    stocks = stock_table(f, universe + extra) if f is not None else None
-    earnings = earnings_calendar(syms + wl) or []
+    have = set(syms)
+    extra = [{"sym": s, "name": (scr.get(s) or {}).get("name") or s, "exch": ""} for s in dict.fromkeys(wl + list(scr)) if s not in have]
+    stocks = stock_table(f, universe + extra, scr) if f is not None else None
+    back = 0
+    if snap_date:
+        back = min(30, max(0, (NOW.astimezone(ET).date() - date.fromisoformat(snap_date)).days))
+    cal = earnings_calendar(sorted(have | set(wl) | set(scr)), cache, back_days=back) or []
+    today_iso = NOW.astimezone(ET).date().isoformat()
+    earnings = [e for e in cal if e["date"] >= today_iso]
+    reported = earnings_feedback([e for e in cal if e["date"] < today_iso], scr, f, snap_date)
+    stale = sorted({x["sym"] for x in reported if x["stale"]})
+    RESCORE_PATH.write_text("".join(s + "\n" for s in stale))
     si = short_interest(syms + wl, cache) or cache.get("si") or {}
     si_data = si.get("data", {})
     nxt = {}
@@ -519,23 +717,37 @@ def daily():
     if tomorrow:
         alerts.append({"key": f"earn:{NOW:%Y-%m-%d}", "level": "hot", "title": "Watchlist earnings coming up",
                        "body": "; ".join(f'{e["sym"]} {e["date"]} {e["time"]}'.strip() for e in tomorrow)})
+    lists = setups(stocks or [])
+    alerts += arrival_alerts(arrivals(state, lists, NOW.astimezone(ET).date()))
     send_alerts(alerts, state)
     if f is not None:
         cache["prev_close"] = {s: float(c.dropna().iloc[-1]) for s, c in f["c"].items() if c.notna().any()}
         cache["session"] = f["c"].index[-1].strftime("%Y-%m-%d")
+    # what the 15-minute scan needs to re-price the lists with the live price
+    cand = {r["sym"]: r for name, rs in lists.items() for r in rs}
+    st = CONFIG["setups"]
+    for r in stocks or []:  # names that could join a list on a live move: swing names near a level, screened stocks
+        near = r.get("dist_to_bounce") is not None and abs(r["dist_to_bounce"]) <= 0.10 and (r.get("swing_amplitude") or 0) >= st["swing_min_amplitude"]
+        if near or (r.get("v_data") and (r.get("dollar_volume_20d") or 0) >= st["min_dollar_volume"]):
+            cand.setdefault(r["sym"], r)
+    cache["setups"] = {s: {k: r.get(k) for k in SETUP_KEEP if k not in ("spark",)} for s, r in cand.items()}
 
     save(OUT_PATH, {"generated_at": NOW.isoformat(timespec="seconds"), "session": cache.get("session"),
                     "regime": regime, "sectors": sectors, "earnings": earnings, "short_date": si.get("date"),
                     "squeeze": [x for x in sq if x["pressure"]][:CONFIG["short_interest"]["list_size"]]
                     + [x for x in sq if not x["pressure"]][:CONFIG["short_interest"]["list_size"]],
                     "regimes": [{"min": lo, "label": lb, "guide": g, "stats": s} for lo, lb, g, s in REGIMES],
+                    "setups": {k: [{f: r.get(f) for f in SETUP_KEEP} for r in v[:60]] for k, v in lists.items()},
+                    "setup_settings": CONFIG["setups"], "reported": reported[:80], "rescore": stale,
+                    "screener": {"snapshot": snap_date, "exported_at": screener.get("exported_at"), "count": len(scr)},
                     "universe_count": len(universe),
                     "alerts": state.get("recent", []), "errors": ERRORS, "watchlist_missing": [s for s in wl if s not in by]})
     if stocks is not None:
         save(STOCKS_PATH, {"generated_at": NOW.isoformat(timespec="seconds"), "stocks": stocks})
     save(CACHE_PATH, cache)
     save(STATE_PATH, state)
-    log(f"daily done: {len(stocks or [])} stocks, {len(earnings)} earnings, {len(sq)} high short interest, errors={len(ERRORS)}")
+    log(f"daily done: {len(stocks or [])} stocks, {len(earnings)} earnings, {len(reported)} reported ({len(stale)} need rescoring), "
+        f"{len(sq)} high short interest; " + ", ".join(f"{k} {len(v)}" for k, v in lists.items()) + f"; errors={len(ERRORS)}")
 
 
 def premarket(day=None, dry=False):
@@ -597,6 +809,31 @@ def premarket(day=None, dry=False):
     log(f"pre-market done: {len(rows)} stocks traded, {len(liquid)} with ${floor:,.0f}+, {len(up)} up {a.get('alert_pct', 3)}%+, {len(fresh)} new")
 
 
+def live_setups(cands, moves):
+    """Re-price the daily candidates at the live price: distance to the bounce level and room to resistance, the
+    week's move in standard deviations, and where the price sits against the Screener's buy price and fair value."""
+    rows = []
+    for s, base in cands.items():
+        m = moves.get(s)
+        if not m or not m.get("price"):
+            continue
+        r, p = dict(base), m["price"]
+        r["price"], r["chg1"] = p, m.get("chg")
+        if r.get("bounce_level"):
+            r["dist_to_bounce"] = p / r["bounce_level"] - 1
+        if r.get("resistance_level"):
+            r["room_to_resistance"] = r["resistance_level"] / p - 1
+        if r.get("close_5ago") and r.get("sigma_daily"):
+            r["ret_1w"] = p / r["close_5ago"] - 1
+            r["dip_sigma_1w"] = r["ret_1w"] / (r["sigma_daily"] * math.sqrt(5))
+        if r.get("buy_below"):
+            r["to_buy"] = p / r["buy_below"] - 1
+        if r.get("fair_value_per_share"):
+            r["upside_to_fair"] = r["fair_value_per_share"] / p - 1
+        rows.append(r)
+    return setups(rows)
+
+
 def usd_short(v):
     return f"${v / 1e6:.1f}M" if v >= 1e6 else f"${v / 1e3:.0f}K"
 
@@ -616,7 +853,8 @@ def live():
     cache, state = load(CACHE_PATH, {}), load(STATE_PATH, {})
     universe = [u["sym"] for u in (cache.get("universe") or {}).get("symbols", [])]
     wl = watchlist()
-    syms = sorted(set(universe + ETFS + wl))
+    cands = cache.get("setups") or {}
+    syms = sorted(set(universe + ETFS + wl + list(cands)))
     prev = prev_closes(syms, now_et.date()) or cache.get("prev_close") or {}
     snap = snapshots(syms)
 
@@ -626,7 +864,7 @@ def live():
         pc = prev.get(sym) or fnum((s.get("prevDailyBar") or {}).get("c"))
         day = s.get("dailyBar") or {}
         return {"price": r2(p, 4), "chg": r2(pct(p, pc)), "high": fnum(day.get("h")), "low": fnum(day.get("l"))} if p and pc else None
-    moves = {s: move(s) for s in set(universe + ETFS + wl)}
+    moves = {s: move(s) for s in syms}
     uni = [moves[s]["chg"] for s in universe if moves.get(s) and moves[s]["chg"] is not None]
     vix = {}
     try:
@@ -655,6 +893,9 @@ def live():
         if m and m["chg"] is not None and abs(m["chg"]) >= ALERTS.get("watchlist_move_pct", 5):
             alerts.append({"key": f"wl:{s}:{NOW:%Y-%m-%d}", "level": "hot" if m["chg"] < 0 else "good",
                            "title": f"{s} {m['chg']:+.1f}% today", "body": f"{s} at {m['price']} ({m['chg']:+.1f}% vs yesterday's close)."})
+    lists = live_setups(cands, moves) if cands else {}
+    alerts += arrival_alerts(arrivals(state, lists, now_et.date()))
+    out["setups"] = {k: [{f: r.get(f) for f in SETUP_KEEP if f != "spark"} for r in v[:60]] for k, v in lists.items()}
     send_alerts(alerts, state)
     out["alerts"] = state.get("recent", [])[:20]
     save(LIVE_PATH, out)
