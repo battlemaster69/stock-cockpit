@@ -1,0 +1,28 @@
+name: Probe data sources (temporary)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Which stock data sources answer from GitHub's servers
+        run: |
+          UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+          probe() { printf '%-26s ' "$1"; curl -s -m 25 -A "$UA" -H "Accept: application/json, text/plain, */*" -o /tmp/body -w '%{http_code} ' "$2"; head -c 110 /tmp/body | tr '\n' ' '; echo; }
+          probe "Alpaca data (no key)"     "https://data.alpaca.markets/v2/stocks/bars?symbols=AAPL&timeframe=1Day&limit=1"
+          probe "Nasdaq symbol directory"  "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+          probe "Nasdaq other-listed"      "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+          probe "Nasdaq earnings API"      "https://api.nasdaq.com/api/calendar/earnings?date=2026-10-06"
+          probe "CBOE VIX history CSV"     "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
+          probe "CBOE VIX3M history CSV"   "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX3M_History.csv"
+          probe "FINRA daily short volume" "https://cdn.finra.org/equity/regsho/daily/CNMSshvol20261002.txt"
+          probe "Yahoo chart API"          "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=5d&interval=1d"
+          probe "Wikipedia S&P 500"        "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+          printf '%-26s ' "SEC EDGAR daily index"; curl -s -m 25 -A "stock-cockpit research probe" -o /tmp/body -w '%{http_code} ' "https://www.sec.gov/Archives/edgar/daily-index/2026/QTR4/"; head -c 110 /tmp/body | tr '\n' ' '; echo
+          printf '%-26s ' "SEC submissions API"; curl -s -m 25 -A "stock-cockpit research probe" -o /tmp/body -w '%{http_code} ' "https://data.sec.gov/submissions/CIK0000320193.json"; head -c 110 /tmp/body | tr '\n' ' '; echo
