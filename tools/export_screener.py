@@ -28,8 +28,8 @@ DEFAULT_SCREENER = REPO.parent / "Stock Fundamental Analysis v3"
 #: detail stay in the Screener.
 NUMBERS = ["price", "score_overall", "score_value", "score_growth", "score_quality", "score_financial_strength",
            "score_cash_quality", "score_momentum", "score_moat", "axes_scored", "z_score", "beta",
-           "fair_value_per_share", "buy_below", "epv_per_share", "pe_ttm", "target_mean", "last_eps_surprise",
-           "market_cap"]
+           "fair_value_per_share", "buy_below", "epv_per_share", "pe_ttm", "target_mean", "analyst_count",
+           "last_eps_surprise", "market_cap"]
 TEXT = ["name", "sector", "industry", "v_value", "v_quality", "v_growth", "v_balance_sheet", "v_data", "v_moat",
         "v_expectations", "z_zone", "price_verdict", "valuation_basis", "last_earnings_date"]
 AXES = ["value", "growth", "quality", "financial_strength", "cash_quality", "momentum", "moat"]

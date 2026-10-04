@@ -251,6 +251,33 @@ def build_universe(cache):
     return keep
 
 
+#: Nasdaq's sector names -> the Screener's (Yahoo) names, so one sector filter covers both sources.
+NASDAQ_SECTORS = {"Finance": "Financial Services", "Consumer Discretionary": "Consumer Cyclical", "Health Care": "Healthcare",
+                  "Technology": "Technology", "Industrials": "Industrials", "Real Estate": "Real Estate", "Energy": "Energy",
+                  "Utilities": "Utilities", "Consumer Staples": "Consumer Defensive", "Basic Materials": "Basic Materials",
+                  "Telecommunications": "Communication Services"}
+
+
+@module("Nasdaq sectors")
+def sector_map(cache):
+    """Sector and industry for every US-listed stock from Nasdaq's stock screener (free, no key), refreshed weekly.
+    Used for stocks the Screener doesn't cover; the Screener's own sector wins where it has one."""
+    old = cache.get("sector_map")
+    if old and NOW_TS - old.get("ts", 0) < CONFIG["universe"].get("rebuild_days", 7) * 86400 and old.get("map"):
+        return old["map"]
+    d = get_json("https://api.nasdaq.com/api/screener/stocks", params={"tableonly": "true", "limit": 25000, "download": "true"},
+                 headers=BROWSER) or {}
+    out = {}
+    for r in (d.get("data") or {}).get("rows") or []:
+        sym, sec = (r.get("symbol") or "").strip().upper().replace("/", "."), (r.get("sector") or "").strip()
+        if sym and sec in NASDAQ_SECTORS:
+            out[sym] = [NASDAQ_SECTORS[sec], (r.get("industry") or "").strip()[:60]]
+    if len(out) < 2000:
+        raise RuntimeError(f"only {len(out)} sectors returned")
+    cache["sector_map"] = {"ts": NOW_TS, "map": out}
+    return out
+
+
 # ------------------------------------------------------------------ market regime
 
 def regime_score(spy, above50, nhnl, vix, vix3m):
@@ -379,7 +406,7 @@ SCREENER_FIELDS = ("score_overall", "score_value", "score_growth", "score_qualit
                    "score_cash_quality", "score_momentum", "score_moat", "axes_scored", "v_value", "v_quality", "v_growth",
                    "v_balance_sheet", "v_data", "v_moat", "v_expectations", "z_score", "z_zone", "m_flag",
                    "fair_value_per_share", "buy_below", "epv_per_share", "valuation_basis", "why_value",
-                   "last_earnings_date", "sector", "industry")
+                   "target_mean", "analyst_count", "last_earnings_date", "sector", "industry")
 #: swing.analyse() outputs kept for the dashboard and the live re-pricing.
 SWING_FIELDS = ("swing_amplitude", "swing_chop", "swing_reversals", "bounce_level", "bounce_touches", "dist_to_bounce",
                 "bounce_median_10d", "bounce_hit_rate_10d", "bounce_resolved_10d", "bounce_median_21d",
@@ -420,9 +447,10 @@ def tactical_measures(cs, vs, spy_ret):
 
 
 @module("Stock table")
-def stock_table(f, universe, scr):
+def stock_table(f, universe, scr, sectors=None):
     """One row per stock: trend, momentum vs SPY, volatility and liquidity, the Screener's tactical and swing
     measures, and its scores re-priced at the latest close."""
+    sectors = sectors or {}
     c, h, l, v = f["c"], f["h"], f["l"], f["v"]
     spy = c["SPY"].dropna()
     spy20, spy60 = pct(spy.iloc[-1], spy.iloc[-21]), pct(spy.iloc[-1], spy.iloc[-61])
@@ -460,8 +488,12 @@ def stock_table(f, universe, scr):
             p = row["price"]
             if rec.get("fair_value_per_share") and p:
                 row["upside_to_fair"] = r2(rec["fair_value_per_share"] / p - 1, 4)
-            if rec.get("buy_below") and p:
-                row["to_buy"] = r2(p / rec["buy_below"] - 1, 4)  # <= 0 means at or below the Screener's buy price
+            if rec.get("target_mean") and p:
+                row["upside_to_target"] = r2(rec["target_mean"] / p - 1, 4)  # analysts' mean price target vs now
+                row["snap_price"] = rec.get("price")  # the price when the Screener read the target (staleness check)
+        if not row.get("sector"):
+            row["sector"], ind = sectors.get(s) or ["Other", ""]
+            row["industry"] = row.get("industry") or ind or None
         rows.append(row)
     if fails:
         log(f"stock table: {fails} series skipped by the swing/tactical measures")
@@ -482,27 +514,37 @@ def setups(rows):
     dips = [r for r in rows if r.get("v_data") in ("clean", "caution", "check first") and g(r, "dip_sigma_1w") is not None
             and r["dip_sigma_1w"] <= st["dip_sigma"] and (g(r, "dollar_volume_20d") or 0) >= mdv
             and (g(r, "z_score") is None or r["z_score"] >= st["z_distress"])]
-    # two independent reads must agree: the DCF buy price and the multiples-based value verdict. The DCF alone
-    # throws up model artefacts (lenders, spin-offs: fair value 5-10x the price), and those would top the list.
-    value = [r for r in rows if (g(r, "score_overall") or 0) >= st["value_min_score"] and g(r, "to_buy") is not None
-             and r["to_buy"] <= st["value_near_buy_pct"] / 100 and r.get("v_data") in ("clean", "caution", "check first")
-             and r.get("v_value") in ("at buy price", "cheap on both", "cheap on one")]
-    for r in value:
-        r["model_check"] = (r.get("upside_to_fair") or 0) > 2  # fair value over 3x the price: check it in the Screener
+    # the price yardstick is the analysts' mean target (owner's choice: easier to read than the Screener's DCF buy
+    # price, which throws up model artefacts for lenders and spin-offs); at least N analysts so one stray target
+    # can't qualify a stock. The DCF fair value stays on the row as a second opinion.
+    # A target read when the price was 40%+ away from today's is stale (big news since, a spin-off like CTVA, or a
+    # split the target never caught up with), so it doesn't qualify a stock. Upside over 100% is listed but tagged.
+    stale = lambda r: bool(g(r, "snap_price") and abs(r["price"] / r["snap_price"] - 1) > st["value_target_stale_pct"] / 100)  # noqa: E731
+    value = [r for r in rows if (g(r, "score_overall") or 0) >= st["value_min_score"] and g(r, "upside_to_target") is not None
+             and r["upside_to_target"] >= st["value_min_target_upside_pct"] / 100 and not stale(r)
+             and (g(r, "analyst_count") or 0) >= st["value_min_analysts"] and r.get("v_data") in ("clean", "caution", "check first")]
+    for r in rows:
+        if r.get("upside_to_fair") is not None:
+            r["model_check"] = r["upside_to_fair"] > 2  # DCF fair value over 3x the price: check it in the Screener
+        if r.get("upside_to_target") is not None:
+            r["target_check"] = r["upside_to_target"] > 1 or stale(r)  # target over 2x the price, or read at a very different price
     return {
         "Swing · at a level": sorted(at_level, key=lambda r: -r["swing_amplitude"]),  # by amplitude, as the Screener: not by the small-sample hit rate
         "Swing · movers": sorted(movers, key=lambda r: -r["swing_amplitude"]),
         "Quality dip": sorted(dips, key=lambda r: (-(r.get("score_overall") or -1), r["dip_sigma_1w"])),  # best business first
-        "Good score at buy price": sorted(value, key=lambda r: (r["model_check"], -(r.get("score_overall") or 0))),  # best business first
+        VALUE_LIST: sorted(value, key=lambda r: -(r.get("score_overall") or 0)),  # best business first
     }
+
+
+VALUE_LIST = "Good score below analyst target"
 
 
 SETUP_KEEP = ("sym", "name", "price", "chg1", "swing_amplitude", "swing_chop", "swing_reversals", "bounce_level",
               "bounce_touches", "dist_to_bounce", "bounce_median_10d", "bounce_hit_rate_10d", "bounce_resolved_10d",
               "bounce_median_21d", "bounce_hit_rate_21d", "resistance_level", "room_to_resistance", "dip_sigma_1w",
               "ret_1w", "sigma_daily", "close_5ago", "dollar_volume_20d", "beta", "atr_pct", "score_overall", "v_value",
-              "v_quality", "v_data", "z_score", "buy_below", "fair_value_per_share", "to_buy", "upside_to_fair", "earn", "model_check",
-              "vs50", "vs200", "spark")
+              "v_quality", "v_data", "z_score", "fair_value_per_share", "upside_to_fair", "target_mean", "analyst_count",
+              "upside_to_target", "snap_price", "target_check", "earn", "model_check", "sector", "industry", "vs50", "vs200", "spark")
 
 
 def arrivals(state, lists, today):
@@ -532,12 +574,12 @@ def arrival_alerts(new):
                                         f'2 wk median {r["bounce_median_10d"] * 100:+.1f}%, {r["bounce_hit_rate_10d"] * 100:.0f}% up; swings {r["swing_amplitude"] * 100:.0f}%/wk)',
         "Quality dip": lambda r: f'{r["sym"]} score {r.get("score_overall") or 0:.0f}, {r["ret_1w"] * 100:+.1f}% this week '
                                  f'({r["dip_sigma_1w"]:+.1f} sd), value: {r.get("v_value") or "?"}',
-        "Good score at buy price": lambda r: f'{r["sym"]} score {r.get("score_overall") or 0:.0f} at ${r["price"]:.2f}, '
-                                             f'buy below ${r["buy_below"]:.2f}, fair ${r.get("fair_value_per_share") or 0:.2f}',
+        VALUE_LIST: lambda r: f'{r["sym"]} score {r.get("score_overall") or 0:.0f} at ${r["price"]:.2f}, analyst target '
+                              f'${r["target_mean"]:.2f} ({r["upside_to_target"] * 100:+.0f}%, {r.get("analyst_count") or 0:.0f} analysts)',
     }
     out = []
     for name, rows in new.items():
-        rows = [r for r in rows if not r.get("model_check")]  # a likely model artefact is listed, never pushed
+        rows = [r for r in rows if not (name == VALUE_LIST and r.get("target_check"))]  # a doubtful target is listed, never pushed
         if not rows:
             continue
         shown = rows[:cap]
@@ -679,9 +721,10 @@ def daily():
     vixd = fetch_vix()
     regime = market_regime(f, vixd, syms) if f is not None else None
     sectors = sector_table(f) if f is not None else None
+    smap = sector_map(cache) or (cache.get("sector_map") or {}).get("map") or {}
     have = set(syms)
     extra = [{"sym": s, "name": (scr.get(s) or {}).get("name") or s, "exch": ""} for s in dict.fromkeys(wl + list(scr)) if s not in have]
-    stocks = stock_table(f, universe + extra, scr) if f is not None else None
+    stocks = stock_table(f, universe + extra, scr, smap) if f is not None else None
     back = 0
     if snap_date:
         back = min(30, max(0, (NOW.astimezone(ET).date() - date.fromisoformat(snap_date)).days))
@@ -811,7 +854,7 @@ def premarket(day=None, dry=False):
 
 def live_setups(cands, moves):
     """Re-price the daily candidates at the live price: distance to the bounce level and room to resistance, the
-    week's move in standard deviations, and where the price sits against the Screener's buy price and fair value."""
+    week's move in standard deviations, and the upside to the analysts' target and the Screener's fair value."""
     rows = []
     for s, base in cands.items():
         m = moves.get(s)
@@ -826,8 +869,8 @@ def live_setups(cands, moves):
         if r.get("close_5ago") and r.get("sigma_daily"):
             r["ret_1w"] = p / r["close_5ago"] - 1
             r["dip_sigma_1w"] = r["ret_1w"] / (r["sigma_daily"] * math.sqrt(5))
-        if r.get("buy_below"):
-            r["to_buy"] = p / r["buy_below"] - 1
+        if r.get("target_mean"):
+            r["upside_to_target"] = r["target_mean"] / p - 1
         if r.get("fair_value_per_share"):
             r["upside_to_fair"] = r["fair_value_per_share"] / p - 1
         rows.append(r)

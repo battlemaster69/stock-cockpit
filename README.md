@@ -10,12 +10,13 @@ Not financial advice: it informs decisions and never trades.
 |---|---|---|
 | Header | **Market regime gauge** (0-100): SPY trend vs its 50/200-day averages, breadth (share of ~1,350 liquid stocks above their 50-day average, new highs vs lows), VIX level and curve. Plus SPY/QQQ/IWM, VIX and breadth cards | Daily after the close; live every 15 min in market hours |
 | Levels | The Screener's swing screen, live: high-beta names that oscillate (7%+ weekly swings, choppy, $20M+ a day) within 4% of a level they've turned at 3+ times, with what followed past touches, the ceiling overhead and beta | Daily + re-priced every 15 min |
-| Value | Your Screener's scores re-priced live: "Good score at buy price" (score 60+, at or near the DCF buy price, multiples agree), "Quality dip" (down 1+ standard deviation this week for that stock, best business first), and earnings reported since the score was computed (surprise, price reaction, rescore list) | Daily + re-priced every 15 min |
+| Value | Your Screener's scores re-priced live: "Good score below analyst target" (score 60+, analysts' average target 20%+ above the price from 3+ analysts; the DCF fair value shown alongside), "Quality dip" (down 1+ standard deviation this week for that stock, best business first), and earnings reported since the score was computed (surprise, price reaction, rescore list) | Daily + re-priced every 15 min |
 | Market | What the score is made of, how each regime behaved 2016-2026, sector ETFs ranked vs SPY | Daily + live |
 | Watchlist | Your tickers: live price, trend, strength vs SPY, next earnings, days to cover | Live every 15 min |
 | Earnings | Next 14 days for every liquid stock (Nasdaq calendar), with time and EPS estimate | Daily |
 | Short interest | FINRA days to cover; "under pressure" = crowded shorts in a rising stock | Twice a month (FINRA) |
 | Stocks | All liquid US stocks (price over $5, $20M+ traded a day), searchable and sortable | Daily |
+| Every list tab | **Sort** (score plus the measures that matter on that tab) and **filter** by sector and minimum Screener score; remembered per tab on the phone. Sectors: the Screener's where it has one, otherwise Nasdaq's stock screener mapped to the same names | |
 | Alerts | Regime changes, VIX above 25/30, SPY down 1.5%+ intraday, watchlist moves of 5%+, watchlist earnings in 3 days (also pushed via ntfy) | |
 
 ## What was tested before building (S&P 1500, daily data 2016-2026)
@@ -43,9 +44,9 @@ The Screener's daily refresh only updates prices, which the Cockpit already does
 
     python tools/export_screener.py --push
 
-It reads `Stock Fundamental Analysis v3/data/snapshot.parquet` read-only and publishes scores, verdicts and fair-value/buy-below prices to `docs/screener.json`. Stocks that report earnings after their score was computed are listed in `docs/rescore.txt`, which the Screener's refresh can read (`python refresh_cli.py --file <cockpit>/docs/rescore.txt`).
+It reads `Stock Fundamental Analysis v3/data/snapshot.parquet` read-only and publishes scores, verdicts, fair value and analyst targets to `docs/screener.json`. Analyst targets are only as fresh as that export: a stock whose price has moved 40%+ since then drops off the Value list until you re-export. Stocks that report earnings after their score was computed are listed in `docs/rescore.txt`, which the Screener's refresh can read (`python refresh_cli.py --file <cockpit>/docs/rescore.txt`).
 
-Alerts follow the Screener's `notify.py` rules: only new arrivals on "Swing · at a level", "Quality dip" and "Good score at buy price"; the first run seeds silently; a name off a list for 21 days can alert again.
+Alerts follow the Screener's `notify.py` rules: only new arrivals on "Swing · at a level", "Quality dip" and "Good score below analyst target" (not names tagged "check target"); the first run seeds silently; a name off a list for 21 days can alert again.
 
 ## Customise (`config.json`)
 Universe filters, indices and sector ETFs, earnings window, short-interest thresholds, alert levels.

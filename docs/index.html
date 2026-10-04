@@ -115,6 +115,12 @@ footer { color: var(--faint); font-size: .76rem; margin-top: 26px; text-align: c
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { #refresh-now.busy svg { animation: none; opacity: .5; } }
 .addbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin: 12px 0 8px; }
+.ctl { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 12px 0 6px; }
+.ctl select { width: 100%; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 9px; color: var(--ink); font: inherit; font-size: .86rem; }
+.ctl select:first-child { grid-column: 1 / -1; }
+.ctl select.on { border-color: var(--warn); }
+@media (min-width: 500px) { .ctl { grid-template-columns: 1.3fr 1fr .8fr; } .ctl select:first-child { grid-column: auto; } }
+.linkbtn { border: 0; background: none; padding: 0; color: var(--warn); cursor: pointer; font-size: inherit; text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -157,7 +163,8 @@ const store = { get(k, d = null) { try { return JSON.parse(localStorage.getItem(
 /* ================= state ================= */
 let DATA = null, STOCKS = [], BY = new Map(), LIVE = null, WATCH = [];
 let current = (location.hash.slice(1) || "market").split("/")[0];
-const ui = { q: "", sort: "rs20", shown: 40, earn: "all", shorts: "pressure" };
+const ui = { q: "", shown: 40, earn: "all", shorts: "pressure" };
+const VALUE_LIST = "Good score below analyst target";
 const liveOn = () => LIVE?.session_open && (Date.now() - new Date(LIVE.generated_at)) < 40 * 60000;
 const lv = sym => liveOn() ? (LIVE.watch?.[sym] || LIVE.indices?.[sym] || LIVE.sectors?.[sym]) : null;
 
@@ -222,14 +229,63 @@ function header() {
     </div>`;
 }
 
+/* ================= sort and filter: one control bar per list tab ================= */
+// [id, label, value of a row (null = keep the list's own order), direction: -1 biggest first, 1 smallest first]
+const chgOf = r => lv(r.sym)?.chg ?? r.chg1;
+const S_SCORE = ["score", "Score", r => r.score_overall, -1], S_TARGET = ["target", "Upside to analyst target", r => r.upside_to_target, -1],
+  S_BETA = ["beta", "Beta", r => r.beta, -1], S_CHG = ["chg", "Today / last session", chgOf, -1];
+const SORTS = {
+  levels: [["list", "Swing size", r => r.swing_amplitude, -1], ["dist", "Closest to level", r => r.dist_to_bounce == null ? null : Math.abs(r.dist_to_bounce), 1],
+    S_SCORE, S_BETA, ["touches", "Times it turned there", r => r.bounce_touches, -1], ["hit", "2-wk hit rate after touches", r => r.bounce_hit_rate_10d, -1],
+    ["median", "2-wk median after touches", r => r.bounce_median_10d, -1], ["room", "Room to ceiling", r => r.room_to_resistance, -1], S_TARGET, S_CHG],
+  value: [["list", "Best score (list order)", null, 0], S_TARGET, ["fair", "Upside to fair value", r => r.upside_to_fair, -1],
+    ["week", "Week's fall (deepest first)", r => r.ret_1w, 1], ["sigma", "Fall in std devs", r => r.dip_sigma_1w, 1], S_BETA, S_CHG],
+  premarket: [["list", "Biggest move", null, 0], ["dv", "Most traded", r => r.dv, -1], S_SCORE, S_TARGET],
+  watch: [["list", "Your order", null, 0], ["rs20", "Strongest vs SPY (20d)", r => r.rs20, -1], S_CHG, S_SCORE, S_TARGET,
+    ["earn", "Next earnings first", r => r.earn ? +new Date(r.earn[0]) : null, 1], S_BETA],
+  earnings: [["list", "Date", null, 0], S_SCORE, ["mcap", "Market cap", r => r.mcap, -1], S_TARGET, ["est", "Analysts covering", r => r.ests, -1]],
+  shorts: [["list", "Days to cover", null, 0], ["si", "Short interest change", r => r.si_chg, -1], ["chg20", "20-day change", r => r.chg20, -1], S_SCORE, S_TARGET],
+  stocks: [["rs20", "Strongest vs SPY (20d)", r => r.rs20, -1], ["chg1", "Last session", r => r.chg1, -1], ["chg20", "20-day change", r => r.chg20, -1],
+    ["high", "Closest to 52w high", r => r.from_high, -1], S_SCORE, S_TARGET, S_BETA, ["atr", "Biggest daily range", r => r.atr_pct, -1],
+    ["dtc", "Days to cover", r => r.dtc, -1], ["dv", "Most traded", r => r.dv20, -1]],
+};
+const SCORE_MIN = [[0, "Any score"], [40, "Score 40+"], [50, "Score 50+"], [60, "Score 60+"], [70, "Score 70+"]];
+const CTL = store.get("ctl", {});
+function ctl(tab) { const c = CTL[tab] ||= {}; if (!SORTS[tab].some(o => o[0] === c.sort)) c.sort = SORTS[tab][0][0]; c.sector ??= ""; c.score = +c.score || 0; return c; }
+const sectorOf = r => r.sector || "Other";
+const filtersOn = tab => { const c = ctl(tab); return !!(c.sector || c.score); };
+function pick(tab, rows) {
+  const c = ctl(tab), opt = SORTS[tab].find(o => o[0] === c.sort);
+  let l = rows.filter(r => (!c.sector || sectorOf(r) === c.sector) && (!c.score || (r.score_overall ?? -1) >= c.score));
+  if (opt[2]) {
+    const val = r => { const v = opt[2](r); return v == null || !isFinite(v) ? null : v; };
+    l = l.map((r, i) => [r, val(r), i]).sort((a, b) => a[1] == null ? (b[1] == null ? a[2] - b[2] : 1) : b[1] == null ? -1 : (a[1] - b[1]) * opt[3] || a[2] - b[2]).map(x => x[0]);
+  }
+  return l;
+}
+function controls(tab, rows) {
+  const c = ctl(tab), n = {}; rows.forEach(r => n[sectorOf(r)] = (n[sectorOf(r)] || 0) + 1);
+  const secs = Object.keys(n).sort((a, b) => a === "Other" ? 1 : b === "Other" ? -1 : a.localeCompare(b));
+  if (c.sector && !n[c.sector]) secs.push(c.sector);
+  return `<div class="ctl">
+    <select data-ctl="${tab}:sort" aria-label="Sort by">${SORTS[tab].map(o => `<option value="${o[0]}" ${o[0] === c.sort ? "selected" : ""}>Sort: ${o[1]}</option>`).join("")}</select>
+    <select data-ctl="${tab}:sector" aria-label="Sector" class="${c.sector ? "on" : ""}"><option value="">All sectors</option>${secs.map(s => `<option value="${esc(s)}" ${s === c.sector ? "selected" : ""}>${esc(s)} (${n[s] || 0})</option>`).join("")}</select>
+    <select data-ctl="${tab}:score" aria-label="Minimum Screener score" class="${c.score ? "on" : ""}">${SCORE_MIN.map(([v, l]) => `<option value="${v}" ${c.score === v ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+    ${filtersOn(tab) ? `<p class="sub" style="margin:0 2px 8px">Filtered: ${[c.sector, c.score ? `score ${c.score}+` : ""].filter(Boolean).map(esc).join(", ")} · <button class="linkbtn" data-reset="${tab}">show all</button></p>` : ""}`;
+}
+const count = (shown, all) => `<span class="sub" style="display:inline">${shown.length}${shown.length !== all.length ? ` of ${all.length}` : ""}</span>`;
+const noMatch = (tab, msg) => `<p class="empty" style="padding:14px">${filtersOn(tab) ? "Nothing matches these filters." : msg}</p>`;
+const uniqSym = rows => [...new Map(rows.map(r => [r.sym, r])).values()];
+
 /* ================= tabs ================= */
 function stockRow(s, main, mainLabel, extra = "", sub = null) {
   const l = lv(s.sym), chg = l ? l.chg : s.chg1, p = l?.price ?? s.price;
   const e = s.earn ? `<span class="tag meh">earnings ${dateShort(s.earn[0])}</span>` : "";
+  const big = typeof main === "string" ? `<span class="big">${esc(main)}</span>` : `<span class="big ${tone(main)}">${main == null ? "–" : pct(main)}</span>`;
   return `<button class="row" data-sym="${esc(s.sym)}"><span><span class="sym">${esc(s.sym)}</span>${WATCH.includes(s.sym) ? ` <span class="meh">★</span>` : ""}${scoreTag(s)}${e}${extra}
       <span class="sub">${sub ?? `${price(p)} · <span class="${tone(chg)}">${pct(chg)}</span> ${l ? "today (live)" : "last session"} · ${s.vs50 > 0 ? "above" : "below"} 50d, ${s.vs200 > 0 ? "above" : "below"} 200d`}</span></span>
     <span class="mini">${spark(s.spark, "var(--ink)", 26)}</span>
-    <span><span class="big ${tone(main)}">${main == null ? "–" : pct(main)}</span><span class="sub" style="text-align:right">${mainLabel}</span></span></button>`;
+    <span>${big}<span class="sub" style="text-align:right">${mainLabel}</span></span></button>`;
 }
 /* ================= Screener setups: levels and value ================= */
 const SETS = () => (liveOn() && LIVE.setups) ? LIVE.setups : (DATA.setups || {});
@@ -247,28 +303,36 @@ const levelSub = r => `Level ${price(r.bounce_level)}, turned ${r.bounce_touches
   + (r.bounce_resolved_10d ? `after ${r.bounce_resolved_10d} past touches the next 2 weeks: median ${p100(r.bounce_median_10d)}, ${Math.round((r.bounce_hit_rate_10d || 0) * 100)}% up` : "no resolved touches yet")
   + (r.resistance_level ? ` · ceiling ${price(r.resistance_level)} (${p100(r.room_to_resistance, 0)} room)` : "") + ` · swings ${p100(r.swing_amplitude, 0).replace("+", "")} a week`;
 function renderLevels() {
-  const S = SETS(), st = DATA.setup_settings || {}, at = S["Swing · at a level"] || [], movers = S["Swing · movers"] || [];
+  const S = SETS(), st = DATA.setup_settings || {}, atAll = (S["Swing · at a level"] || []).map(mergeRow), mvAll = (S["Swing · movers"] || []).map(mergeRow);
+  const at = pick("levels", atAll), movers = pick("levels", mvAll);
   return `<p class="hint" style="margin-top:14px"><b>High-beta names at levels they've respected</b>, the Screener's swing screen running ${liveOn() ? "live (prices every 15 minutes)" : "on the latest close"}. A name qualifies when it swings ${Math.round((st.swing_min_amplitude || .07) * 100)}%+ in a typical week, keeps reversing rather than trending, trades $${((st.min_dollar_volume || 2e7) / 1e6).toFixed(0)}M+ a day, and sits within ${st.at_level_pct || 4}% of a price it has turned at 3+ times in two years. Big number: distance from that level (negative = just under it). β = beta to SPY over a year.</p>
     <p class="hint"><b>Read the count before the median.</b> These are 3–6 touches, and a level that broke badly stops getting touched, so the levels with the longest records are the ones that have held so far. A level is a place to look, not a reason. A close below it is the stop most traders use.</p>
-    <h2>At a level now <span class="sub" style="display:inline">${at.length}</span></h2>
-    ${at.map(r => setupRow(r, x => x.dist_to_bounce, "from level", levelSub)).join("") || `<p class="empty" style="padding:14px">No swing name at a level right now.</p>`}
-    <details class="panel" style="padding:10px 14px;margin-top:14px"><summary class="sub" style="cursor:pointer">Swing movers: ${movers.length} names that oscillate (a lasting property; watch them reach a level)</summary><div style="margin-top:10px">
+    ${controls("levels", uniqSym([...atAll, ...mvAll]))}
+    <h2>At a level now ${count(at, atAll)}</h2>
+    ${at.map(r => setupRow(r, x => x.dist_to_bounce, "from level", levelSub)).join("") || noMatch("levels", "No swing name at a level right now.")}
+    <details class="panel" style="padding:10px 14px;margin-top:14px"><summary class="sub" style="cursor:pointer">Swing movers: ${movers.length}${movers.length !== mvAll.length ? ` of ${mvAll.length}` : ""} names that oscillate (a lasting property; watch them reach a level)</summary><div style="margin-top:10px">
       ${movers.map(r => setupRow(r, x => x.dist_to_bounce, "from nearest level", x => `Swings ${p100(x.swing_amplitude, 0).replace("+", "")} a week, ${x.swing_reversals ?? "–"} turns in six months` + (x.bounce_level ? ` · nearest level ${price(x.bounce_level)} (turned ${x.bounce_touches}×)` : " · no level within 15%"))).join("")}</div></details>`;
 }
+const targetTxt = x => x.target_mean ? `Analyst target ${price(x.target_mean)}${x.analyst_count ? ` (${Math.round(x.analyst_count)} analysts)` : ""}` : "No analyst target";
+const fairTxt = x => x.fair_value_per_share ? `fair value ${price(x.fair_value_per_share)} (${p100(x.upside_to_fair, 0)})${x.model_check ? ` <span class="meh">check model</span>` : ""}` : "";
 function renderValue() {
-  const S = SETS(), st = DATA.setup_settings || {}, buy = S["Good score at buy price"] || [], dips = S["Quality dip"] || [], rep = DATA.reported || [], sc = DATA.screener || {};
-  return `<p class="hint" style="margin-top:14px"><b>Good businesses at a good price</b>, from your Screener's scores (snapshot ${esc(sc.snapshot || "–")}, ${sc.count || 0} stocks) re-priced ${liveOn() ? "live every 15 minutes" : "at the latest close"}. The scores themselves only change when you re-export them from the Screener; everything that depends on price updates here.</p>
-    <h2>Good score at buy price <span class="sub" style="display:inline">${buy.length}</span></h2>
-    <p class="hint">Overall score ${st.value_min_score || 60}+, the price at, below or within ${st.value_near_buy_pct || 5}% of the Screener's DCF buy-below price, <i>and</i> its multiples-based value verdict agrees (at buy price, or cheap on one or both). Best business first. Big number: price vs buy price (negative = below it). <span class="tag meh">check model</span> = fair value over 3× the price, usually a cash-flow measure that doesn't suit the business (lenders, spin-offs); these are never pushed as alerts.</p>
-    ${buy.map(r => setupRow(r, x => x.to_buy, "vs buy price", x => `Buy below ${price(x.buy_below)} · fair ${price(x.fair_value_per_share)} (${p100(x.upside_to_fair, 0)}) · value: ${esc(x.v_value || "–")} · quality: ${esc(x.v_quality || "–")}`, r.model_check ? `<span class="tag meh">check model</span>` : "")).join("") || `<p class="empty" style="padding:14px">Nothing at a buy price right now.</p>`}
-    <h2>Quality dip <span class="sub" style="display:inline">${dips.length}</span></h2>
+  const S = SETS(), st = DATA.setup_settings || {}, sc = DATA.screener || {};
+  const tgtAll = (S[VALUE_LIST] || []).map(mergeRow), dipAll = (S["Quality dip"] || []).map(mergeRow);
+  const repAll = (DATA.reported || []).map(x => ({ ...(BY.get(x.sym) || {}), ...x, score_overall: x.score ?? BY.get(x.sym)?.score_overall }));
+  const tgt = pick("value", tgtAll), dips = pick("value", dipAll), rep = pick("value", repAll);
+  return `<p class="hint" style="margin-top:14px"><b>Good businesses at a good price</b>, from your Screener's scores (snapshot ${esc(sc.snapshot || "–")}, ${sc.count || 0} stocks) re-priced ${liveOn() ? "live every 15 minutes" : "at the latest close"}. The scores themselves only change when you re-export them from the Screener; everything that depends on price updates here. The sort and filters apply to all three lists.</p>
+    ${controls("value", uniqSym([...tgtAll, ...dipAll, ...repAll]))}
+    <h2>Good score below analyst target ${count(tgt, tgtAll)}</h2>
+    <p class="hint">Overall score ${st.value_min_score ?? 60}+, the analysts' average price target at least ${st.value_min_target_upside_pct ?? 20}% above the price, set by ${st.value_min_analysts ?? 3}+ analysts, clean enough data. Big number: upside to that target at today's price. The Screener's DCF fair value is shown as a second opinion (<span class="meh">check model</span> = over 3× the price, usually a cash-flow measure that doesn't suit the business). Analyst targets lean optimistic and trail the price, so use the upside to compare stocks, not as a forecast. Targets are read when you export the Screener's scores: a stock whose price has moved ${st.value_target_stale_pct ?? 40}%+ since then is left out (the target is stale), and <span class="tag meh">check target</span> = target over 2× the price, often a stock split the target data missed; these are never pushed as alerts.</p>
+    ${tgt.map(r => setupRow(r, x => x.upside_to_target, "to analyst target", x => `${targetTxt(x)} · ${fairTxt(x) || "no fair value"} · value: ${esc(x.v_value || "–")} · quality: ${esc(x.v_quality || "–")}`, r.target_check ? `<span class="tag meh">check target</span>` : "")).join("") || noMatch("value", "Nothing qualifies right now.")}
+    <h2>Quality dip ${count(dips, dipAll)}</h2>
     <p class="hint">The Screener's "Dip · liquid": down more than ${Math.abs(st.dip_sigma || 1)} standard deviation this week <i>for that stock</i> (so a utility and a chip stock are judged on their own normal), $${((st.min_dollar_volume || 2e7) / 1e6).toFixed(0)}M+ a day, not in financial distress, clean enough data. Best business first, since on a list of fallers the deepest fall is usually the worst company. Half of these are news you haven't read yet.</p>
-    ${dips.map(r => setupRow(r, x => x.ret_1w, "this week", x => `${x.dip_sigma_1w != null ? x.dip_sigma_1w.toFixed(1) : "–"} standard deviations for this stock · value: ${esc(x.v_value || "–")} · quality: ${esc(x.v_quality || "–")}` + (x.bounce_level && Math.abs(x.dist_to_bounce) <= .05 ? ` · near a level it turned at ${x.bounce_touches}×` : ""))).join("") || `<p class="empty" style="padding:14px">No quality dips right now.</p>`}
-    <h2>Reported since the Screener scored them</h2>
+    ${dips.map(r => setupRow(r, x => x.ret_1w, "this week", x => `${x.dip_sigma_1w != null ? x.dip_sigma_1w.toFixed(1) : "–"} standard deviations for this stock · ${x.upside_to_target != null ? `analyst target ${p100(x.upside_to_target, 0)}` : "no analyst target"} · value: ${esc(x.v_value || "–")} · quality: ${esc(x.v_quality || "–")}` + (x.bounce_level && Math.abs(x.dist_to_bounce) <= .05 ? ` · near a level it turned at ${x.bounce_touches}×` : ""))).join("") || noMatch("value", "No quality dips right now.")}
+    <h2>Reported since the Screener scored them ${count(rep, repAll)}</h2>
     <p class="hint">Earnings released after the score was computed: the score predates this news. Big moves either way are the ones to re-check. These tickers are listed in <code>docs/rescore.txt</code> for your next Screener refresh; then re-export the scores.</p>
     <div class="panel scroll"><table><thead><tr><th>Stock</th><th>Reported</th><th>EPS vs est</th><th>Surprise</th><th>Price reaction</th></tr></thead><tbody>
-      ${rep.map(x => `<tr class="click" data-sym="${esc(x.sym)}"><td><b>${esc(x.sym)}</b>${x.score != null ? ` <span class="sub" style="display:inline">score ${Math.round(x.score)}</span>` : ""}</td><td>${dateShort(x.date)}</td>
-        <td>${x.eps != null ? "$" + x.eps.toFixed(2) : "–"} / ${x.eps_est != null ? "$" + x.eps_est.toFixed(2) : "–"}</td><td class="${tone(x.surprise)}">${pct(x.surprise)}</td><td class="${tone(x.reaction)}">${pct(x.reaction)}</td></tr>`).join("") || `<tr><td colspan="5">No reports since the snapshot.</td></tr>`}</tbody></table></div>`;
+      ${rep.map(x => `<tr class="click" data-sym="${esc(x.sym)}"><td><b>${esc(x.sym)}</b>${x.score_overall != null ? ` <span class="sub" style="display:inline">score ${Math.round(x.score_overall)}</span>` : ""}</td><td>${dateShort(x.date)}</td>
+        <td>${x.eps != null ? "$" + x.eps.toFixed(2) : "–"} / ${x.eps_est != null ? "$" + x.eps_est.toFixed(2) : "–"}</td><td class="${tone(x.surprise)}">${pct(x.surprise)}</td><td class="${tone(x.reaction)}">${pct(x.reaction)}</td></tr>`).join("") || `<tr><td colspan="5">${filtersOn("value") ? "Nothing matches these filters." : "No reports since the snapshot."}</td></tr>`}</tbody></table></div>`;
 }
 function renderPremarket() {
   const P = LIVE?.premarket, st = P?.settings || { alert_pct: 3, min_dollar_volume: 1e6 };
@@ -276,14 +340,17 @@ function renderPremarket() {
     <p class="hint"><b>How to read it:</b> a pre-market gap is a day-trading watchlist, not a buy list. In the 10-year daily backtest, big gap-ups lagged SPY over the following weeks on average. What matters is whether the gap <b>holds after the open</b> with volume; gaps on earnings (tagged) are the most volatile.</p>`;
   if (!P) return intro + `<p class="empty">No pre-market scan yet. The first one runs on the next trading morning.</p>`;
   const today = P.day === new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
-  const row = r => `<button class="row" data-sym="${esc(r.sym)}"><span><span class="sym">${esc(r.sym)}</span>${r.watch ? ` <span class="meh">★</span>` : ""}${r.earn ? `<span class="tag meh">earnings ${esc(r.earn)}</span>` : ""}
+  const row = r => `<button class="row" data-sym="${esc(r.sym)}"><span><span class="sym">${esc(r.sym)}</span>${r.watch ? ` <span class="meh">★</span>` : ""}${scoreTag(r)}${typeof r.earn === "string" ? `<span class="tag meh">earnings ${esc(r.earn)}</span>` : ""}
       <span class="sub">${price(r.price)} · ${usd(r.dv)} traded · prev close ${price(r.prev)}</span></span>
     <span class="mini">${spark(r.spark, "var(--ink)", 26)}</span><span><span class="big ${tone(r.chg)}">${pct(r.chg)}</span><span class="sub" style="text-align:right">pre-market</span></span></button>`;
   const ix = Object.entries(P.indices || {});
-  return `${intro}<h2>${today ? "This morning" : dateShort(P.day)}${P.test ? " (test replay)" : ""}</h2>
+  const m = r => ({ ...(BY.get(r.sym) || {}), ...r, spark: r.spark }), upAll = (P.up || []).map(m), downAll = (P.down || []).map(m);
+  const up = pick("premarket", upAll), down = pick("premarket", downAll);
+  return `${intro}<h2>${today ? "This morning" : dateShort(P.day)}${P.test ? " (test replay)" : ""} ${count(up, upAll)}</h2>
     <p class="hint">Pre-market prices as of ${clock(P.as_of)} your time · ${P.liquid} of ${P.count} stocks traded ${usd(st.min_dollar_volume)}+${ix.length ? " · " + ix.map(([k, v]) => `${k} <span class="${tone(v.chg)}">${pct(v.chg)}</span>`).join(", ") : ""}${today ? "" : ". From an earlier session."}</p>
-    ${(P.up || []).map(row).join("") || `<p class="empty" style="padding:14px">No liquid stock up ${st.alert_pct}%+ ${today ? "so far" : "that morning"}.</p>`}
-    ${(P.down || []).length ? `<details class="panel" style="padding:10px 14px"><summary class="sub" style="cursor:pointer">${P.down.length} down ${st.alert_pct}%+ pre-market</summary><div style="margin-top:10px">${P.down.map(row).join("")}</div></details>` : ""}`;
+    ${controls("premarket", [...upAll, ...downAll])}
+    ${up.map(row).join("") || noMatch("premarket", `No liquid stock up ${st.alert_pct}%+ ${today ? "so far" : "that morning"}.`)}
+    ${downAll.length ? `<details class="panel" style="padding:10px 14px"><summary class="sub" style="cursor:pointer">${down.length}${down.length !== downAll.length ? ` of ${downAll.length}` : ""} down ${st.alert_pct}%+ pre-market</summary><div style="margin-top:10px">${down.map(row).join("")}</div></details>` : ""}`;
 }
 function renderMarket() {
   const g = DATA.regime || {}, sec = DATA.sectors || [];
@@ -303,42 +370,55 @@ function renderMarket() {
         return `<tr><td><b>${esc(s.name)}</b> <span class="sub" style="display:inline">${s.etf}</span></td><td class="${tone(c)}">${pct(c)}</td><td class="${tone(s.rs5)}">${pct(s.rs5)}</td><td class="${tone(s.rs20)}">${pct(s.rs20)}</td><td>${s.above50 ? `<span class="good">above</span>` : `<span class="bad">below</span>`}</td></tr>`; }).join("")}</tbody></table></div>`;
 }
 function renderWatch() {
-  const rows = WATCH.map(s => BY.get(s) || { sym: s, missing: true });
+  const all = WATCH.map(s => BY.get(s) || { sym: s, missing: true }), rows = pick("watch", all);
   return `<div class="addbar"><input class="search" id="add-sym" placeholder="Add a ticker, e.g. NVDA" autocapitalize="characters" aria-label="Ticker to add"><button class="btn primary" data-add>Add</button></div>
     <p class="hint">Your watchlist: live prices every 15 minutes while the market is open, trend, next earnings and short interest. Alerts fire on a ${DATA.alert_move ?? 5}%+ move in a day and before earnings. Tap a stock for details.</p>
+    ${all.length ? controls("watch", all) : ""}
+    ${!rows.length && all.length ? noMatch("watch", "") : ""}
     ${rows.map(s => s.missing ? `<button class="row" data-sym="${esc(s.sym)}"><span><span class="sym">${esc(s.sym)}</span><span class="sub">Data arrives with the next daily run.</span></span><span></span><span></span></button>`
       : stockRow(s, s.rs20, "vs SPY 20d", s.dtc >= 5 ? `<span class="tag">${s.dtc.toFixed(1)}d to cover</span>` : "")).join("")
       || `<p class="empty">Your watchlist is empty. Add a ticker above, or open any stock in the Stocks tab.</p>`}`;
 }
 function renderEarnings() {
-  const e = (DATA.earnings || []).filter(x => ui.earn === "all" || WATCH.includes(x.sym));
-  const byDate = {}; e.forEach(x => (byDate[x.date] ||= []).push(x));
+  const all = (DATA.earnings || []).filter(x => ui.earn === "all" || WATCH.includes(x.sym)).map(x => ({ ...(BY.get(x.sym) || {}), ...x }));
+  const e = pick("earnings", all), byDate = {};
+  // date order: grouped by day; any other sort: one ranked table with the date on each row
+  const line = (x, withDate) => `<tr class="click" data-sym="${esc(x.sym)}"><td><b>${esc(x.sym)}</b>${WATCH.includes(x.sym) ? ` <span class="meh">★</span>` : ""}${x.score_overall != null ? ` <span class="sub" style="display:inline">score ${Math.round(x.score_overall)}</span>` : ""}<span class="sub">${esc((x.name || "").slice(0, 26))}${x.sector && x.sector !== "Other" ? " · " + esc(x.sector) : ""}</span></td>${withDate ? `<td>${dateShort(x.date)}</td>` : ""}<td>${esc(x.time) || "–"}</td><td>est ${x.eps_est != null ? "$" + x.eps_est.toFixed(2) : "–"}</td><td>${usd(x.mcap)}</td></tr>`;
+  const ranked = ctl("earnings").sort !== "list";
+  if (!ranked) e.forEach(x => (byDate[x.date] ||= []).push(x));
   return `<div class="chips"><button class="chip" data-earn="all" aria-pressed="${ui.earn === "all"}">All liquid stocks</button><button class="chip" data-earn="watch" aria-pressed="${ui.earn === "watch"}">Watchlist only</button></div>
     <p class="hint">Earnings in the next ${DATA.earnings_days ?? 14} days (Nasdaq calendar). A position held through earnings can gap 5–20% either way: decide in advance whether to hold, trim or wait.</p>
-    ${Object.entries(byDate).map(([d, list]) => `<h2>${dateShort(d)}</h2><div class="panel scroll"><table><tbody>${list.map(x => `<tr class="click" data-sym="${esc(x.sym)}"><td><b>${esc(x.sym)}</b>${WATCH.includes(x.sym) ? ` <span class="meh">★</span>` : ""} <span class="sub" style="display:inline">${esc((x.name || "").slice(0, 26))}</span></td><td>${esc(x.time) || "–"}</td><td>est ${x.eps_est != null ? "$" + x.eps_est.toFixed(2) : "–"}</td><td>${usd(x.mcap)}</td></tr>`).join("")}</tbody></table></div>`).join("")
-      || `<p class="empty">${ui.earn === "watch" ? "None of your watchlist reports in this window." : "No earnings found."}</p>`}`;
+    ${controls("earnings", all)}
+    ${!e.length ? (filtersOn("earnings") ? noMatch("earnings", "") : `<p class="empty">${ui.earn === "watch" ? "None of your watchlist reports in this window." : "No earnings found."}</p>`)
+      : ranked ? `<p class="sub" style="margin:2px">${count(e, all)} reports</p><div class="panel scroll"><table><tbody>${e.map(x => line(x, true)).join("")}</tbody></table></div>`
+      : Object.entries(byDate).map(([d, list]) => `<h2>${dateShort(d)}</h2><div class="panel scroll"><table><tbody>${list.map(x => line(x, false)).join("")}</tbody></table></div>`).join("")}`;
 }
 function renderShorts() {
-  const all = DATA.squeeze || [], list = all.filter(x => ui.shorts === "all" || x.pressure);
+  const all = (DATA.squeeze || []).filter(x => ui.shorts === "all" || x.pressure).map(x => ({ ...(BY.get(x.sym) || {}), ...x })), list = pick("shorts", all);
   return `<div class="chips"><button class="chip" data-shorts="pressure" aria-pressed="${ui.shorts === "pressure"}">Shorts under pressure</button><button class="chip" data-shorts="all" aria-pressed="${ui.shorts === "all"}">All crowded shorts</button></div>
     <p class="hint">FINRA short interest as of ${esc(DATA.short_date || "–")} (published twice a month, about a week late). <b>Days to cover</b> = shares sold short ÷ average daily volume: how many days of normal trading shorts would need to buy back. "Under pressure" = 5+ days to cover <i>and</i> the price is rising (above its 50-day average, up over 20 days), the setup where short covering can add fuel. Crowded shorts in falling stocks are usually right.</p>
-    ${list.map(x => stockRow(BY.get(x.sym) || x, x.dtc, "days to cover", x.pressure ? `<span class="tag good">under pressure</span>` : "",
-      `Short interest ${pct(x.si_chg, 0)} since last report · ${pct(x.chg20)} in 20d · ${x.vs50 > 0 ? "above" : "below"} 50d`).replace(/class="big good">\+?/, 'class="big">')).join("")
-      || `<p class="empty">Nothing matches right now.</p>`}`;
+    ${controls("shorts", all)}<p class="sub" style="margin:2px">${count(list, all)} stocks</p>
+    ${list.map(x => stockRow(x, x.dtc != null ? x.dtc.toFixed(1) + "d" : null, "days to cover", x.pressure ? `<span class="tag good">under pressure</span>` : "",
+      `Short interest ${pct(x.si_chg, 0)} since last report · ${pct(x.chg20)} in 20d · ${x.vs50 > 0 ? "above" : "below"} 50d`)).join("")
+      || noMatch("shorts", "Nothing matches right now.")}`;
 }
 function stocksList() {
   const q = ui.q.trim().toUpperCase();
   let l = STOCKS; if (q) l = l.filter(s => s.sym.includes(q) || (s.name || "").toUpperCase().includes(q));
-  const key = { rs20: s => -(s.rs20 ?? -1e9), chg1: s => -(s.chg1 ?? -1e9), chg20: s => -(s.chg20 ?? -1e9), high: s => -(s.from_high ?? -1e9), dtc: s => -(s.dtc ?? -1), dv: s => -(s.dv20 ?? 0) }[ui.sort];
-  return [...l].sort((a, b) => key(a) - key(b));
+  return pick("stocks", l);
 }
-function renderStocksRows() { const l = stocksList(), lab = { rs20: ["rs20", "vs SPY 20d"], chg1: ["chg1", "last session"], chg20: ["chg20", "20 days"], high: ["from_high", "from 52w high"], dtc: ["dtc", "days to cover"], dv: ["rs20", "vs SPY 20d"] }[ui.sort];
-  return `<p class="sub" style="margin:2px">${l.length} stocks</p>${l.slice(0, ui.shown).map(s => stockRow(s, s[lab[0]], lab[1])).join("") || `<p class="empty">Nothing matches.</p>`}
+// the big number on each row follows the sort
+const STOCK_SHOW = { rs20: s => [s.rs20, "vs SPY 20d"], chg1: s => [s.chg1, "last session"], chg20: s => [s.chg20, "20 days"], high: s => [s.from_high, "from 52w high"],
+  score: s => [s.rs20, "vs SPY 20d"], target: s => [s.upside_to_target != null ? s.upside_to_target * 100 : null, "to analyst target"],
+  beta: s => [s.beta != null ? s.beta.toFixed(2) : "–", "beta to SPY"], atr: s => [s.atr_pct != null ? s.atr_pct.toFixed(1) + "%" : "–", "daily range"],
+  dtc: s => [s.dtc != null ? s.dtc.toFixed(1) + "d" : "–", "days to cover"], dv: s => [usd(s.dv20), "traded a day"] };
+function renderStocksRows() { const l = stocksList(), show = STOCK_SHOW[ctl("stocks").sort];
+  return `<p class="sub" style="margin:2px">${l.length} stocks</p>${l.slice(0, ui.shown).map(s => stockRow(s, ...show(s))).join("") || noMatch("stocks", "Nothing matches.")}
     ${l.length > ui.shown ? `<button class="btn" style="width:100%" data-more>Show 40 more</button>` : ""}`; }
 function renderStocks() {
-  return `<div class="toolbar"><input class="search" id="q" type="search" placeholder="Search ticker or name" value="${esc(ui.q)}" aria-label="Search stocks">
-    <select class="sort" id="sort" aria-label="Sort by">${[["rs20", "Strongest vs SPY (20d)"], ["chg1", "Last session"], ["chg20", "20-day change"], ["high", "Closest to 52w high"], ["dtc", "Days to cover"], ["dv", "Most traded"]].map(([v, l]) => `<option value="${v}" ${ui.sort === v ? "selected" : ""}>${l}</option>`).join("")}</select></div>
-    <p class="hint">${DATA.universe_count} liquid US stocks (price over $5, $20M+ traded a day), refreshed after each close. Tap one for details or to add it to your watchlist.</p>
+  return `<div class="toolbar" style="grid-template-columns:1fr"><input class="search" id="q" type="search" placeholder="Search ticker or name" value="${esc(ui.q)}" aria-label="Search stocks"></div>
+    ${controls("stocks", STOCKS)}
+    <p class="hint">${DATA.universe_count} liquid US stocks (price over $5, $20M+ traded a day) plus the rest of your Screener's list, refreshed after each close. Tap one for details or to add it to your watchlist.</p>
     <div id="stock-rows">${renderStocksRows()}</div>`;
 }
 function renderAlerts() {
@@ -357,6 +437,7 @@ function detail(s) {
     <div class="sheet-body">
       <div class="stats" style="margin-top:12px"><div><span>Price${l ? " (live)" : ""}</span><b>${price(l?.price ?? s.price)}</b></div>
         <div><span>${l ? "Today" : "Last session"}</span><b class="${tone(l ? l.chg : s.chg1)}">${pct(l ? l.chg : s.chg1)}</b></div></div>
+      ${s.sector ? `<p class="sub" style="margin:0 0 8px">${esc(s.sector)}${s.industry ? " · " + esc(s.industry) : ""}</p>` : ""}
       <div class="spark-wrap">${spark(s.spark, "var(--ink)", 60)}</div><p class="sub" style="margin:2px 0 10px">Last 60 sessions</p>
       <button class="btn ${w ? "" : "primary"}" data-toggle="${esc(s.sym)}">${w ? "Remove from watchlist" : "Add to watchlist"}</button>
       <h3>Trend</h3><div class="stats">
@@ -381,8 +462,8 @@ function detail(s) {
       ${s.score_overall != null ? `<h3>Screener</h3><div class="stats">
         <div><span>Overall score</span><b class="${s.score_overall >= 60 ? "good" : s.score_overall < 40 ? "bad" : ""}">${Math.round(s.score_overall)} / 100</b></div>
         <div><span>Value · quality</span><b>${esc(s.v_value || "–")} · ${esc(s.v_quality || "–")}</b></div>
-        <div><span>Buy below</span><b>${price(s.buy_below)}${s.to_buy != null ? ` <span class="${s.to_buy <= 0 ? "good" : ""}">(${p100(s.to_buy)} now)</span>` : ""}</b></div>
-        <div><span>Fair value</span><b>${price(s.fair_value_per_share)}${s.upside_to_fair != null ? ` (${p100(s.upside_to_fair, 0)})` : ""}</b></div>
+        <div><span>Analyst target${s.analyst_count ? ` (${Math.round(s.analyst_count)} analysts)` : ""}</span><b>${price(s.target_mean)}${s.upside_to_target != null ? ` <span class="${tone(s.upside_to_target)}">(${p100(s.upside_to_target, 0)})</span>` : ""}${s.target_check ? ` <span class="meh">check target</span>` : ""}</b></div>
+        <div><span>Fair value (Screener DCF)</span><b>${price(s.fair_value_per_share)}${s.upside_to_fair != null ? ` (${p100(s.upside_to_fair, 0)})` : ""}${s.model_check ? ` <span class="meh">check model</span>` : ""}</b></div>
         <div><span>Growth · balance sheet</span><b>${esc(s.v_growth || "–")} · ${esc(s.v_balance_sheet || "–")}</b></div>
         <div><span>Moat · data</span><b>${esc(s.v_moat || "–")} · ${esc(s.v_data || "–")}</b></div>
         ${["value", "growth", "quality", "financial_strength", "cash_quality", "momentum", "moat"].map(a => s["score_" + a] != null ? `<div><span>${a.replace("_", " ")}</span><b>${Math.round(s["score_" + a])}</b></div>` : "").join("")}</div>
@@ -465,9 +546,12 @@ document.addEventListener("click", e => { const t = e.target;
   const tab = t.closest("[data-tab]"); if (tab) { current = tab.dataset.tab; history.replaceState(null, "", "#" + current); render(); return; }
   const ec = t.closest("[data-earn]"); if (ec) { ui.earn = ec.dataset.earn; return render(); }
   const sc = t.closest("[data-shorts]"); if (sc) { ui.shorts = sc.dataset.shorts; return render(); }
+  const rs = t.closest("[data-reset]"); if (rs) { const c = ctl(rs.dataset.reset); c.sector = ""; c.score = 0; store.set("ctl", CTL); ui.shown = 40; const y = scrollY; render(); scrollTo(0, y); return; }
   if (t.closest("[data-more]")) { ui.shown += 40; $("#stock-rows").innerHTML = renderStocksRows(); } });
 document.addEventListener("input", e => { if (e.target.id === "q") { ui.q = e.target.value; ui.shown = 40; $("#stock-rows").innerHTML = renderStocksRows(); } });
-document.addEventListener("change", e => { if (e.target.id === "sort") { ui.sort = e.target.value; ui.shown = 40; $("#stock-rows").innerHTML = renderStocksRows(); } });
+document.addEventListener("change", e => { const k = e.target.dataset?.ctl; if (!k) return;
+  const [tab, field] = k.split(":"); ctl(tab)[field] = field === "score" ? +e.target.value : e.target.value; store.set("ctl", CTL);
+  ui.shown = 40; const y = scrollY; render(); scrollTo(0, y); });
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeSheet(); if (e.key === "Enter" && e.target.id === "add-sym") toggleWatch(e.target.value); });
 window.addEventListener("popstate", () => closeSheet(true));
 const getJson = p => fetch(p + "?t=" + Date.now(), { cache: "no-store" }).then(r => r.ok ? r.json() : null).catch(() => null);
