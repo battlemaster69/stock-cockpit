@@ -19,6 +19,12 @@
   "earnings_days": 14,
   "short_interest": {"min_days_to_cover": 5, "list_size": 60},
 
+  "premarket": {
+    "_note": "Pre-market scan, 4:00-9:30 New York, every 15 minutes: alert on stocks up this much vs yesterday's close with at least this much traded (full-market data, 15 minutes delayed).",
+    "alert_pct": 3,
+    "min_dollar_volume": 1000000
+  },
+
   "alerts": {
     "vix_levels": [25, 30],
     "spy_intraday_drop_pct": 1.5,

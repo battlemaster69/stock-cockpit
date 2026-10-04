@@ -227,6 +227,21 @@ function stockRow(s, main, mainLabel, extra = "", sub = null) {
     <span class="mini">${spark(s.spark, "var(--ink)", 26)}</span>
     <span><span class="big ${tone(main)}">${main == null ? "–" : pct(main)}</span><span class="sub" style="text-align:right">${mainLabel}</span></span></button>`;
 }
+function renderPremarket() {
+  const P = LIVE?.premarket, st = P?.settings || { alert_pct: 3, min_dollar_volume: 1e6 };
+  const intro = `<p class="hint">US pre-market runs 4:00–9:30 am New York time. Checked every 15 minutes against yesterday's close, using full-market data that the free feed delays by 15 minutes. You get a phone alert for stocks up ${st.alert_pct}%+ with at least ${usd(st.min_dollar_volume)} traded (smaller moves are often a few thin trades). Each stock alerts once a day; ★ = watchlist.</p>
+    <p class="hint"><b>How to read it:</b> a pre-market gap is a day-trading watchlist, not a buy list. In the 10-year daily backtest, big gap-ups lagged SPY over the following weeks on average. What matters is whether the gap <b>holds after the open</b> with volume; gaps on earnings (tagged) are the most volatile.</p>`;
+  if (!P) return intro + `<p class="empty">No pre-market scan yet. The first one runs on the next trading morning.</p>`;
+  const today = P.day === new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const row = r => `<button class="row" data-sym="${esc(r.sym)}"><span><span class="sym">${esc(r.sym)}</span>${r.watch ? ` <span class="meh">★</span>` : ""}${r.earn ? `<span class="tag meh">earnings ${esc(r.earn)}</span>` : ""}
+      <span class="sub">${price(r.price)} · ${usd(r.dv)} traded · prev close ${price(r.prev)}</span></span>
+    <span class="mini">${spark(r.spark, "var(--ink)", 26)}</span><span><span class="big ${tone(r.chg)}">${pct(r.chg)}</span><span class="sub" style="text-align:right">pre-market</span></span></button>`;
+  const ix = Object.entries(P.indices || {});
+  return `${intro}<h2>${today ? "This morning" : dateShort(P.day)}${P.test ? " (test replay)" : ""}</h2>
+    <p class="hint">Pre-market prices as of ${clock(P.as_of)} your time · ${P.liquid} of ${P.count} stocks traded ${usd(st.min_dollar_volume)}+${ix.length ? " · " + ix.map(([k, v]) => `${k} <span class="${tone(v.chg)}">${pct(v.chg)}</span>`).join(", ") : ""}${today ? "" : ". From an earlier session."}</p>
+    ${(P.up || []).map(row).join("") || `<p class="empty" style="padding:14px">No liquid stock up ${st.alert_pct}%+ ${today ? "so far" : "that morning"}.</p>`}
+    ${(P.down || []).length ? `<details class="panel" style="padding:10px 14px"><summary class="sub" style="cursor:pointer">${P.down.length} down ${st.alert_pct}%+ pre-market</summary><div style="margin-top:10px">${P.down.map(row).join("")}</div></details>` : ""}`;
+}
 function renderMarket() {
   const g = DATA.regime || {}, sec = DATA.sectors || [];
   const parts = Object.entries(g.parts || {});
@@ -288,7 +303,7 @@ function renderAlerts() {
   return `<h2>Recent alerts</h2><p class="hint">The same alerts pushed to your phone through ntfy.</p>
     <div class="panel">${a.map(x => `<div class="alert"><b class="${x.level === "hot" ? "bad" : "good"}">${esc(x.title)}</b><p>${esc(x.body)}</p><p>${ago(new Date(x.ts * 1000))}</p></div>`).join("") || `<p class="empty">No alerts yet.</p>`}</div>`;
 }
-const TABS = [["market", "Market", renderMarket], ["watch", "Watchlist", renderWatch], ["earnings", "Earnings", renderEarnings],
+const TABS = [["market", "Market", renderMarket], ["premarket", "Pre-market", renderPremarket], ["watch", "Watchlist", renderWatch], ["earnings", "Earnings", renderEarnings],
   ["shorts", "Short interest", renderShorts], ["stocks", "Stocks", renderStocks], ["alerts", "Alerts", renderAlerts]];
 
 /* ================= detail sheet ================= */

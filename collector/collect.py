@@ -24,8 +24,9 @@ import math
 import os
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -36,6 +37,8 @@ DOCS, DATA = ROOT / "docs", ROOT / "data"
 OUT_PATH, STOCKS_PATH, LIVE_PATH = DOCS / "data.json", DOCS / "stocks.json", DOCS / "live.json"
 WATCH_PATH = DOCS / "watchlist.json"
 STATE_PATH, CACHE_PATH = DATA / "state.json", DATA / "cache.json"
+DATA.mkdir(exist_ok=True)  # git doesn't keep empty folders
+ET = ZoneInfo("America/New_York")
 
 NOW = datetime.now(timezone.utc)
 NOW_TS = int(NOW.timestamp())
@@ -166,6 +169,32 @@ def frames(bars):
         df = pd.DataFrame(cols[f])
         df.index = pd.to_datetime(df.index)
         out[f] = df.sort_index()
+    return out
+
+
+def prev_closes(symbols, day):
+    """Each symbol's last full-market daily close before `day` (a US/Eastern date)."""
+    out = {}
+    for s, bs in daily_bars(symbols, 12).items():
+        before = [b for b in bs if b["t"][:10] < day.isoformat()]
+        if before:
+            out[s] = before[-1]["c"]
+    return out
+
+
+def intraday_bars(symbols, start, end, timeframe="5Min"):
+    """Full-market (SIP) intraday bars, extended hours included; the free plan serves them up to 15 minutes ago."""
+    out = {}
+    for i in range(0, len(symbols), 200):
+        params = {"symbols": ",".join(symbols[i:i + 200]), "timeframe": timeframe, "start": start, "end": end,
+                  "limit": 10000, "adjustment": "raw", "feed": "sip"}
+        while True:
+            d = alpaca("/stocks/bars", params) or {}
+            for s, bars in (d.get("bars") or {}).items():
+                out.setdefault(s, []).extend(bars)
+            if not d.get("next_page_token"):
+                break
+            params["page_token"] = d["next_page_token"]
     return out
 
 
@@ -509,17 +538,87 @@ def daily():
     log(f"daily done: {len(stocks or [])} stocks, {len(earnings)} earnings, {len(sq)} high short interest, errors={len(ERRORS)}")
 
 
+def premarket(day=None, dry=False):
+    """US pre-market (4:00-9:30 New York): stocks up 3%+ on yesterday's close with real money behind the move.
+    Full-market bars are 15 minutes delayed on the free plan, so this sees the pre-market up to 15 minutes ago.
+    `day` replays a past morning for testing (no alerts sent)."""
+    cache, state = load(CACHE_PATH, {}), load(STATE_PATH, {})
+    universe = [u["sym"] for u in (cache.get("universe") or {}).get("symbols", [])]
+    wl = watchlist()
+    syms = sorted(set(universe + list(INDICES) + wl))
+    day = day or datetime.now(ET).date()
+    start = datetime(day.year, day.month, day.day, 4, 0, tzinfo=ET)
+    end = min(datetime(day.year, day.month, day.day, 9, 29, tzinfo=ET), NOW.astimezone(ET) - timedelta(minutes=16))
+    if end <= start + timedelta(minutes=5):
+        log("pre-market: too early for delayed data")
+        return
+    prev = prev_closes(syms, day)
+    bars = intraday_bars(syms, start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                         end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    a = CONFIG.get("premarket", {})
+    today_earn = {e["sym"]: e for e in (load(OUT_PATH, {}) or {}).get("earnings", []) if e["date"] == day.isoformat()}
+    names = {u["sym"]: u["name"] for u in (cache.get("universe") or {}).get("symbols", [])}
+    rows = []
+    for s, bs in bars.items():
+        pc = prev.get(s)
+        if not pc or not bs:
+            continue
+        p, dv = bs[-1]["c"], sum(b["c"] * b["v"] for b in bs)
+        rows.append({"sym": s, "name": names.get(s, s), "price": r2(p, 4), "prev": r2(pc, 4), "chg": r2(pct(p, pc)),
+                     "dv": round(dv), "trades": sum(b.get("n", 0) for b in bs), "watch": s in wl,
+                     "earn": today_earn[s]["time"] or "today" if s in today_earn else None,
+                     "spark": [r2(b["c"], 4) for b in bs][-40:]})
+    floor = a.get("min_dollar_volume", 1_000_000)
+    liquid = [r for r in rows if r["dv"] >= floor and r["sym"] not in INDICES]
+    up = sorted([r for r in liquid if r["chg"] >= a.get("alert_pct", 3)], key=lambda r: (not r["watch"], -r["chg"]))
+    down = sorted([r for r in liquid if r["chg"] <= -a.get("alert_pct", 3)], key=lambda r: r["chg"])
+    idx = {r["sym"]: {k: r[k] for k in ("price", "chg", "dv")} for r in rows if r["sym"] in INDICES}
+    alerts = []
+    seen = state.setdefault("pm_alerted", {})
+    seen = {k: v for k, v in seen.items() if v == day.isoformat()}
+    fresh = [r for r in up if r["sym"] not in seen]
+    if fresh and not dry:
+        spy = (idx.get("SPY") or {}).get("chg")
+        alerts.append({"key": f"pm:{NOW_TS}", "level": "good",
+                       "title": f"Pre-market up {a.get('alert_pct', 3)}%+: " + ", ".join(("★" if r["watch"] else "") + r["sym"] for r in fresh[:6]),
+                       "body": "; ".join(f'{r["sym"]} {r["chg"]:+.1f}% ({usd_short(r["dv"])} traded{", earnings " + r["earn"] if r["earn"] else ""})' for r in fresh[:8])
+                               + (f". SPY {spy:+.1f}% pre-market." if spy is not None else "") + " Data 15 min delayed."})
+        for r in fresh:
+            seen[r["sym"]] = day.isoformat()
+    state["pm_alerted"] = seen
+    send_alerts(alerts, state)
+    out = load(LIVE_PATH, {}) or {}
+    out.update({"premarket": {"generated_at": NOW.isoformat(timespec="seconds"), "day": day.isoformat(), "as_of": end.isoformat(timespec="minutes"),
+                              "test": dry, "indices": idx, "up": up[:40], "down": down[:20], "count": len(rows), "liquid": len(liquid),
+                              "settings": {"alert_pct": a.get("alert_pct", 3), "min_dollar_volume": floor}},
+                "alerts": state.get("recent", [])[:20]})
+    save(LIVE_PATH, out)
+    save(STATE_PATH, state)
+    log(f"pre-market done: {len(rows)} stocks traded, {len(liquid)} with ${floor:,.0f}+, {len(up)} up {a.get('alert_pct', 3)}%+, {len(fresh)} new")
+
+
+def usd_short(v):
+    return f"${v / 1e6:.1f}M" if v >= 1e6 else f"${v / 1e3:.0f}K"
+
+
 def live():
-    """While the market is open: live moves (IEX prices against yesterday's full-market close)."""
+    """Every 15 minutes: the pre-market scan before the open, live moves while the market is open."""
+    if "--premarket-date" in sys.argv:  # replay a past morning (testing; no alerts)
+        return premarket(date.fromisoformat(sys.argv[sys.argv.index("--premarket-date") + 1]), dry=True)
     clock = alpaca("/clock", base=TRADE_API) if AK else {}
+    nxt = datetime.fromisoformat(clock["next_open"]).astimezone(ET) if (clock or {}).get("next_open") else None
+    now_et = NOW.astimezone(ET)
     if not (clock or {}).get("is_open") and "--force" not in sys.argv:
+        if nxt and nxt.date() == now_et.date() and now_et.hour >= 4 and now_et < nxt:
+            return premarket()
         log(f"market closed (next open {(clock or {}).get('next_open')}); nothing to do")
         return
     cache, state = load(CACHE_PATH, {}), load(STATE_PATH, {})
-    prev = cache.get("prev_close") or {}
     universe = [u["sym"] for u in (cache.get("universe") or {}).get("symbols", [])]
     wl = watchlist()
-    snap = snapshots(sorted(set(universe + ETFS + wl)))
+    syms = sorted(set(universe + ETFS + wl))
+    prev = prev_closes(syms, now_et.date()) or cache.get("prev_close") or {}
+    snap = snapshots(syms)
 
     def move(sym):
         s = snap.get(sym) or {}
@@ -534,7 +633,8 @@ def live():
         vix = cboe_live("VIX")
     except Exception as e:  # noqa: BLE001
         ERRORS["CBOE live VIX"] = str(e)[:200]
-    out = {"generated_at": NOW.isoformat(timespec="seconds"), "session_open": True,
+    out = {**({"premarket": (load(LIVE_PATH, {}) or {}).get("premarket")}),  # keep this morning's pre-market list
+           "generated_at": NOW.isoformat(timespec="seconds"), "session_open": True,
            "indices": {k: moves.get(k) for k in INDICES}, "sectors": {k: moves.get(k) for k in SECTORS},
            "vix": vix, "watch": {s: moves.get(s) for s in wl},
            "breadth": {"count": len(uni), "up": sum(1 for x in uni if x > 0), "down": sum(1 for x in uni if x < 0),

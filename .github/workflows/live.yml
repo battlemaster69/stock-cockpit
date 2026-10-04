@@ -2,13 +2,17 @@ name: Live market scan
 
 on:
   schedule:
-    - cron: "*/15 13-21 * * 1-5"   # best-effort backup; a cron-job.org timer dispatches this every 15 minutes
+    - cron: "*/15 8-21 * * 1-5"    # best-effort backup; a cron-job.org timer dispatches this every 15 minutes (pre-market from 08:00 UTC)
   workflow_dispatch:
     inputs:
       auto:
         description: "Started by a timer: skip if the last scan is under 7 minutes old"
         type: boolean
         default: false
+      premarket_date:
+        description: "Testing: replay a past pre-market morning (YYYY-MM-DD), no alerts"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -30,7 +34,7 @@ jobs:
         id: gate
         if: github.event_name == 'schedule' || inputs.auto
         run: |
-          age=$(python3 -c "import json,time,datetime; d=json.load(open('docs/live.json')); print(int(time.time() - datetime.datetime.fromisoformat(d['generated_at']).timestamp()))" 2>/dev/null || echo 999999)
+          age=$(python3 -c "import json,time,datetime as dt; d=json.load(open('docs/live.json')); ts=[d.get('generated_at'), (d.get('premarket') or {}).get('generated_at')]; print(int(time.time() - max(dt.datetime.fromisoformat(t).timestamp() for t in ts if t)))" 2>/dev/null || echo 999999)
           echo "last scan ${age}s ago"
           if [ "$age" -lt 420 ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; fi
 
@@ -49,7 +53,7 @@ jobs:
           ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-        run: python collector/collect.py --live
+        run: python collector/collect.py --live ${{ inputs.premarket_date && format('--premarket-date {0}', inputs.premarket_date) || '' }}
 
       - name: Save results
         if: always() && steps.gate.outputs.skip != 'true'
