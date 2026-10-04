@@ -1,0 +1,66 @@
+name: Daily market update
+
+on:
+  schedule:
+    - cron: "30 21 * * 1-5"    # after the US close (best-effort; a cron-job.org timer dispatches this too)
+  workflow_dispatch:
+    inputs:
+      auto:
+        description: "Started by a timer: skip if data is under 6 hours old"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stock-daily
+  cancel-in-progress: false
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Skip if data is fresh
+        id: gate
+        if: github.event_name == 'schedule' || inputs.auto
+        run: |
+          age=$(python3 -c "import json,time,datetime; d=json.load(open('docs/data.json')); print(int(time.time() - datetime.datetime.fromisoformat(d['generated_at']).timestamp()))" 2>/dev/null || echo 999999)
+          echo "data is ${age}s old"
+          if [ "$age" -lt 21600 ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: actions/setup-python@v6
+        if: steps.gate.outputs.skip != 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+        if: steps.gate.outputs.skip != 'true'
+
+      - name: Collect
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python collector/collect.py --daily
+
+      - name: Save results
+        if: always() && steps.gate.outputs.skip != 'true'
+        run: |
+          git config user.name "cockpit-bot"
+          git config user.email "cockpit-bot@users.noreply.github.com"
+          git add docs/data.json docs/stocks.json data/ 2>/dev/null || true
+          git diff --cached --quiet && exit 0
+          git commit -m "data: $(date -u +'%Y-%m-%d %H:%M')"
+          for i in 1 2 3 4; do
+            git pull --rebase -X theirs origin "${GITHUB_REF_NAME}" && git push && exit 0
+            sleep 7
+          done
+          exit 1

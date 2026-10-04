@@ -1,0 +1,28 @@
+{
+  "_readme": "Stock Cockpit settings. Universe = liquid US common stocks; regime = risk gauge from trend, breadth and VIX; earnings and short interest as catalysts. Your watchlist lives in docs/watchlist.json and is edited from the dashboard.",
+
+  "universe": {
+    "min_price": 5,
+    "min_dollar_volume": 20000000,
+    "rebuild_days": 7,
+    "exclude_name_keywords": [" warrant", " units", " unit ", " rights", " right ", "preferred", "depositary share", "notes due", " debentures", "acquisition corp", "trust units", " etn", "%"],
+    "keep_name_keywords": ["american depositary"]
+  },
+
+  "indices": {"SPY": "S&P 500", "QQQ": "Nasdaq 100", "IWM": "Russell 2000"},
+  "sectors": {
+    "XLK": "Technology", "XLC": "Communication", "XLY": "Consumer discretionary", "XLF": "Financials",
+    "XLI": "Industrials", "XLV": "Health care", "XLE": "Energy", "XLB": "Materials",
+    "XLP": "Consumer staples", "XLU": "Utilities", "XLRE": "Real estate"
+  },
+
+  "earnings_days": 14,
+  "short_interest": {"min_days_to_cover": 5, "list_size": 60},
+
+  "alerts": {
+    "vix_levels": [25, 30],
+    "spy_intraday_drop_pct": 1.5,
+    "watchlist_move_pct": 5,
+    "cooldown_hours": 12
+  }
+}

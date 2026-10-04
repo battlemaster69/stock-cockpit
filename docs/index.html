@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14222B" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#E9EEF0" media="(prefers-color-scheme: light)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Stock Cockpit</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #14222B; --panel: #1B2E39; --face: #213847; --line: #2D4553;
+  --ink: #E4ECEF; --dim: #8EA2AC; --faint: #5E7480;
+  --ok: #46C08A; --warn: #E2A83E; --hot: #E2604C; --idle: #6B808B;
+  --body: "Barlow", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --num: "Barlow Semi Condensed", "Barlow", system-ui, sans-serif;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root { --bg: #E9EEF0; --panel: #FFFFFF; --face: #F3F6F7; --line: #D2DCE1; --ink: #142530; --dim: #566C77; --faint: #8A9DA6;
+    --ok: #1F9A63; --warn: #B87A0C; --hot: #C7412E; --idle: #8A9DA6; color-scheme: light; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 16px; line-height: 1.45; -webkit-font-smoothing: antialiased;
+  padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px); }
+.wrap { max-width: 560px; margin: 0 auto; padding: 0 14px 40px; }
+button { font: inherit; color: inherit; }
+a { color: inherit; }
+:focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; border-radius: 4px; }
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 18px 2px 10px; }
+h1 { font-family: var(--num); font-weight: 700; font-size: 1.5rem; margin: 0; white-space: nowrap; }
+.head-right { display: flex; align-items: center; gap: 10px; }
+.stamp { color: var(--dim); font-size: .82rem; text-align: right; }
+.stamp.stale { color: var(--warn); }
+.icon-btn { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; width: 38px; height: 38px; display: grid; place-items: center; cursor: pointer; flex: none; }
+.icon-btn svg { width: 18px; height: 18px; }
+.gauge-card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; display: grid; grid-template-columns: 132px 1fr; gap: 12px; align-items: center; }
+.gauge-card svg { width: 132px; height: auto; display: block; }
+.gval { font-family: var(--num); font-weight: 700; font-size: 2rem; line-height: 1; text-align: center; margin-top: -6px; }
+.glabel { font-family: var(--num); font-weight: 700; font-size: 1.25rem; }
+.gguide { color: var(--dim); font-size: .86rem; margin-top: 4px; }
+.needle { transform-origin: 70px 70px; transition: transform 1.1s cubic-bezier(.2,.9,.25,1.05); }
+@media (prefers-reduced-motion: reduce) { .needle { transition: none; } }
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 9px 10px; min-width: 0; }
+.card .k { font-family: var(--num); font-weight: 600; font-size: .95rem; display: flex; justify-content: space-between; gap: 4px; }
+.card .k span:last-child { font-weight: 500; }
+.card .v { font-family: var(--num); font-weight: 700; font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.card .s { color: var(--dim); font-size: .74rem; font-variant-numeric: tabular-nums; }
+.card svg { width: 100%; height: 26px; display: block; margin-top: 4px; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.errors { margin: 10px 0 0; padding: 9px 12px; border-radius: 10px; background: color-mix(in srgb, var(--warn) 14%, transparent); font-size: .82rem; }
+nav { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); margin: 14px -14px 0; padding: 8px 14px; }
+.tabs { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 4px; }
+.tabs button { flex: 1 0 auto; border: 0; background: none; padding: 8px 9px; font-size: .92rem; border-radius: 8px; font-weight: 500; color: var(--dim); white-space: nowrap; cursor: pointer; }
+.tabs button[aria-selected="true"] { background: var(--face); color: var(--ink); font-weight: 600; }
+section[hidden] { display: none; }
+h2 { font-family: var(--num); font-weight: 600; font-size: 1.15rem; margin: 22px 2px 4px; }
+.hint { color: var(--dim); font-size: .85rem; margin: 0 2px 10px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .86rem; font-variant-numeric: tabular-nums; }
+th { text-align: right; color: var(--dim); font-weight: 500; padding: 6px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { text-align: right; padding: 8px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; padding-left: 0; }
+tr:last-child td { border-bottom: 0; }
+tr.click { cursor: pointer; }
+.good { color: var(--ok); } .bad { color: var(--hot); } .meh { color: var(--warn); }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) 64px auto; gap: 10px; align-items: center; width: 100%; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; margin-bottom: 7px; cursor: pointer; }
+.row .mini svg { width: 64px; height: 26px; display: block; }
+.sym { font-family: var(--num); font-weight: 700; font-size: 1.1rem; }
+.sub { color: var(--dim); font-size: .8rem; font-variant-numeric: tabular-nums; display: block; }
+.big { font-family: var(--num); font-weight: 700; font-size: 1.2rem; text-align: right; font-variant-numeric: tabular-nums; display: block; }
+.tag { display: inline-block; font-size: .72rem; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); margin-left: 6px; vertical-align: 2px; white-space: nowrap; }
+.tag.good { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, transparent); }
+.tag.bad { color: var(--hot); border-color: color-mix(in srgb, var(--hot) 50%, transparent); }
+.tag.meh { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0 8px; }
+.chip { border: 1px solid var(--line); background: none; border-radius: 999px; padding: 4px 12px; font-size: .85rem; color: var(--dim); cursor: pointer; }
+.chip[aria-pressed="true"] { border-color: var(--ink); color: var(--ink); }
+.toolbar { display: grid; grid-template-columns: minmax(0, 1fr) 9.5rem; gap: 8px; margin: 12px 0 4px; }
+.search, select.sort, .field input { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; color: var(--ink); font: inherit; min-width: 0; }
+.empty { text-align: center; color: var(--dim); padding: 30px 10px; }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 9px 14px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.btn.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.btn[disabled] { opacity: .5; cursor: default; }
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin: 0 0 10px; font-size: .86rem; }
+.stats div span { display: block; color: var(--dim); font-size: .76rem; }
+.stats div b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.alert { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.alert:last-child { border-bottom: 0; }
+.alert p { margin: 2px 0 0; color: var(--dim); font-size: .85rem; }
+.sheet-back { position: fixed; inset: 0; background: rgba(5, 12, 16, .55); z-index: 20; }
+.sheet { position: fixed; inset: 0; z-index: 21; overflow-y: auto; background: var(--bg); padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px); }
+@media (min-width: 640px) { .sheet { inset: 4vh 0 0 0; max-width: 560px; margin: 0 auto; border-radius: 18px 18px 0 0; border: 1px solid var(--line); } }
+.sheet-head { position: sticky; top: 0; z-index: 2; background: var(--bg); display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+.sheet-title { font-family: var(--num); font-weight: 700; font-size: 1.4rem; }
+.sheet-title small { font-family: var(--body); font-weight: 400; color: var(--dim); font-size: .9rem; margin-left: 6px; }
+.sheet-body { padding: 4px 16px 32px; }
+.sheet h3 { font-family: var(--num); font-weight: 600; font-size: 1.05rem; margin: 18px 0 8px; }
+.spark-wrap svg { width: 100%; height: 60px; display: block; }
+.field { display: grid; gap: 4px; margin-bottom: 12px; }
+.field label { color: var(--dim); font-size: .84rem; }
+.steps { padding-left: 20px; margin: 0 0 14px; color: var(--dim); font-size: .88rem; }
+.toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: .9rem; z-index: 40; max-width: 90vw; }
+footer { color: var(--faint); font-size: .76rem; margin-top: 26px; text-align: center; }
+.addbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin: 12px 0 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Stock Cockpit</h1>
+    <span class="head-right"><span class="stamp" id="stamp">Loading</span>
+      <button class="icon-btn" id="open-settings" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+    </span>
+  </header>
+  <div id="app"></div>
+  <footer>Free data from Alpaca, Nasdaq, FINRA and CBOE. Live prices from IEX; full-market data 15 minutes delayed. Not financial advice.</footer>
+</div>
+<div id="layer"></div>
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const usd = v => { if (v == null || !isFinite(v)) return "–"; const a = Math.abs(v);
+  if (a >= .9995e12) return "$" + (v / 1e12).toFixed(2) + "T"; if (a >= .9995e9) return "$" + (v / 1e9).toFixed(1) + "B";
+  if (a >= .9995e6) return "$" + (v / 1e6).toFixed(0) + "M"; return "$" + Math.round(v).toLocaleString(); };
+const price = v => v == null ? "–" : v >= 1000 ? "$" + v.toLocaleString("en-US", { maximumFractionDigits: 0 }) : "$" + v.toFixed(2);
+const pct = (v, d = 1) => v == null || !isFinite(v) ? "–" : (v > 0 ? "+" : "") + v.toFixed(d) + "%";
+const tone = (v, up = true) => v == null ? "" : (v > 0) === up ? "good" : v === 0 ? "" : "bad";
+const ago = iso => { const s = (Date.now() - new Date(iso)) / 1000; return s < 3600 ? Math.max(1, Math.round(s / 60)) + " min ago" : s < 86400 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago"; };
+const clock = iso => { const d = new Date(iso), t = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return d.toDateString() === new Date().toDateString() ? t : d.toLocaleDateString([], { day: "numeric", month: "short" }) + ", " + t; };
+const when = iso => `${clock(iso)} (${ago(iso)})`;
+const dateShort = s => new Date(s + "T12:00:00").toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+function toast(m) { const t = document.createElement("div"); t.className = "toast"; t.textContent = m; document.body.appendChild(t); setTimeout(() => t.remove(), 3200); }
+function spark(values, color = "var(--ink)", h = 26) {
+  const v = (values || []).filter(x => x != null && isFinite(x)); if (v.length < 2) return "";
+  const w = 300, mn = Math.min(...v), mx = Math.max(...v), sp = mx - mn || 1;
+  const pts = v.map((y, i) => `${(i / (v.length - 1) * w).toFixed(1)},${(h - 3 - (y - mn) / sp * (h - 6)).toFixed(1)}`).join(" ");
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+}
+const store = { get(k, d = null) { try { return JSON.parse(localStorage.getItem("stocks:" + k)) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("stocks:" + k, JSON.stringify(v)); } catch {} } };
+
+/* ================= state ================= */
+let DATA = null, STOCKS = [], BY = new Map(), LIVE = null, WATCH = [];
+let current = (location.hash.slice(1) || "market").split("/")[0];
+const ui = { q: "", sort: "rs20", shown: 40, earn: "all", shorts: "pressure" };
+const liveOn = () => LIVE?.session_open && (Date.now() - new Date(LIVE.generated_at)) < 40 * 60000;
+const lv = sym => liveOn() ? (LIVE.watch?.[sym] || LIVE.indices?.[sym] || LIVE.sectors?.[sym]) : null;
+
+/* ================= GitHub (watchlist edits) ================= */
+function gh() { const m = location.hostname.match(/^([^.]+)\.github\.io$/);
+  return { owner: store.get("owner") || (m ? m[1] : ""), repo: store.get("repo") || location.pathname.split("/").filter(Boolean)[0] || "", token: store.get("token") || "" }; }
+async function ghGet() { const { owner, repo, token } = gh();
+  const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/docs/watchlist.json?t=${Date.now()}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" }, cache: "no-store" });
+  if (!r.ok) throw new Error(r.status === 401 ? "Token rejected" : r.status === 404 ? "Repo or file not found" : "GitHub error " + r.status);
+  const j = await r.json(); return { sha: j.sha, tickers: JSON.parse(atob(j.content.replace(/\n/g, ""))).tickers || [] }; }
+async function ghSave(edit, msg) { const { owner, repo, token } = gh();
+  for (let i = 0; i < 3; i++) { const cur = await ghGet(); const next = edit(cur.tickers);
+    const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/docs/watchlist.json`, { method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+      body: JSON.stringify({ message: msg, content: btoa(JSON.stringify({ tickers: next })), sha: cur.sha }) });
+    if (r.ok) return next; if (r.status !== 409 && r.status !== 422) throw new Error(r.status === 403 ? "Token lacks write access" : "GitHub error " + r.status); }
+  throw new Error("Save conflict, try again"); }
+async function toggleWatch(sym) {
+  sym = sym.trim().toUpperCase(); if (!sym) return;
+  if (!gh().token) { openSettings("Add a GitHub token to edit your watchlist from here."); return; }
+  const adding = !WATCH.includes(sym);
+  try { WATCH = await ghSave(l => adding ? [...new Set([...l, sym])] : l.filter(x => x !== sym), `${adding ? "Add" : "Remove"} ${sym} ${adding ? "to" : "from"} watchlist`);
+    store.set("watch_cache", { at: Date.now(), tickers: WATCH });
+    toast(adding ? `${sym} added. ${BY.has(sym) ? "" : "Its data arrives with the next daily run."}` : `${sym} removed.`); render(); if ($("#layer").innerHTML) openSheet(sym, true);
+  } catch (e) { toast(e.message); } }
+
+/* ================= header ================= */
+function arc(a, b, r = 54) { const t = p => Math.PI * (1 - p / 100);
+  return `M${(70 + r * Math.cos(t(a))).toFixed(2)} ${(70 - r * Math.sin(t(a))).toFixed(2)} A${r} ${r} 0 0 1 ${(70 + r * Math.cos(t(b))).toFixed(2)} ${(70 - r * Math.sin(t(b))).toFixed(2)}`; }
+const regTone = s => s >= 55 ? "ok" : s >= 35 ? "warn" : "hot";
+function gauge(g) {
+  return `<div class="gauge-card" role="group" aria-label="Market regime ${g.score} of 100, ${esc(g.label)}">
+    <div><svg viewBox="0 0 140 80" aria-hidden="true">
+      <path d="${arc(0, 100)}" stroke="var(--face)" stroke-width="10" fill="none"/>
+      <path d="${arc(0, 34)}" stroke="var(--hot)" stroke-width="10" fill="none" opacity=".55"/>
+      <path d="${arc(35, 54)}" stroke="var(--warn)" stroke-width="10" fill="none" opacity=".55"/>
+      <path d="${arc(55, 100)}" stroke="var(--ok)" stroke-width="10" fill="none" opacity=".55"/>
+      <g class="needle" data-v="${g.score}" style="transform:rotate(-90deg)"><line x1="70" y1="70" x2="70" y2="24" stroke="var(--ink)" stroke-width="2.4" stroke-linecap="round"/></g>
+      <circle cx="70" cy="70" r="5" fill="var(--ink)"/></svg><div class="gval">${g.score}</div></div>
+    <div><div class="glabel" style="color:var(--${regTone(g.score)})">${esc(g.label)}</div><div class="gguide">${esc(g.guide)}</div>
+      <div class="gguide">Market regime, ${esc(g.as_of)} close. A risk gauge: it sets size and stops, not direction.</div></div></div>`;
+}
+function idxCard(sym, x) {
+  const l = lv(sym), p = l?.price ?? x.price, c = l ? l.chg : x.chg1;
+  return `<div class="card"><div class="k"><span>${sym}</span><span class="${tone(c)}">${pct(c)}</span></div><div class="v">${price(p)}</div>
+    <div class="s">${x.above50 ? "above" : "below"} 50d · ${x.above200 ? "above" : "below"} 200d</div><div class="s">${pct(x.from_high)} from high</div>${spark(x.spark)}</div>`;
+}
+function header() {
+  const g = DATA.regime; if (!g) return `<p class="empty">Market data unavailable this run.</p>`;
+  const v = g.vix || {}, b = g.breadth || {}, lvx = liveOn() ? LIVE.vix : null, lb = liveOn() ? LIVE.breadth : null;
+  const vixNow = lvx?.price ?? v.close;
+  return `${gauge(g)}
+    <div class="cards">${Object.entries(g.indices || {}).map(([k, x]) => idxCard(k, x)).join("")}</div>
+    <div class="row2">
+      <div class="card"><div class="k"><span>VIX</span><span class="${tone(lvx?.chg_pct ?? v.chg1, false)}">${pct(lvx?.chg_pct ?? v.chg1)}</span></div>
+        <div class="v ${vixNow >= 25 ? "bad" : vixNow < 15 ? "good" : ""}">${vixNow != null ? vixNow.toFixed(1) : "–"}</div>
+        <div class="s">3-month VIX ${v.vix3m ?? "–"}${v.inverted ? ` · <b class="bad">curve inverted</b>` : ""}</div>${spark(v.spark)}</div>
+      <div class="card"><div class="k"><span>Breadth</span><span>${b.count ?? ""} stocks</span></div>
+        <div class="v ${b.above50 >= 60 ? "good" : b.above50 < 35 ? "bad" : "meh"}">${b.above50 ?? "–"}%</div>
+        <div class="s">above 50-day (${pct(b.above50 - b.above50_5d_ago, 0)} in 5d) · ${b.above200}% above 200-day</div>
+        <div class="s">${lb ? `today ${lb.up} up / ${lb.down} down (live)` : `new highs ${b.new_highs} / lows ${b.new_lows}`}</div>${spark(b.series50)}</div>
+    </div>`;
+}
+
+/* ================= tabs ================= */
+function stockRow(s, main, mainLabel, extra = "", sub = null) {
+  const l = lv(s.sym), chg = l ? l.chg : s.chg1, p = l?.price ?? s.price;
+  const e = s.earn ? `<span class="tag meh">earnings ${dateShort(s.earn[0])}</span>` : "";
+  return `<button class="row" data-sym="${esc(s.sym)}"><span><span class="sym">${esc(s.sym)}</span>${WATCH.includes(s.sym) ? ` <span class="meh">★</span>` : ""}${e}${extra}
+      <span class="sub">${sub ?? `${price(p)} · <span class="${tone(chg)}">${pct(chg)}</span> ${l ? "today (live)" : "last session"} · ${s.vs50 > 0 ? "above" : "below"} 50d, ${s.vs200 > 0 ? "above" : "below"} 200d`}</span></span>
+    <span class="mini">${spark(s.spark, "var(--ink)", 26)}</span>
+    <span><span class="big ${tone(main)}">${main == null ? "–" : pct(main)}</span><span class="sub" style="text-align:right">${mainLabel}</span></span></button>`;
+}
+function renderMarket() {
+  const g = DATA.regime || {}, sec = DATA.sectors || [];
+  const parts = Object.entries(g.parts || {});
+  return `<h2>What the regime is made of</h2>
+    <div class="panel scroll"><table><tbody>${parts.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="${v > 0 ? "good" : v < 0 ? "bad" : ""}">${v > 0 ? "+" : ""}${v}</td></tr>`).join("")}
+      <tr><td><b>Score</b></td><td><b>${g.score}/100</b></td></tr></tbody></table></div>
+    <div class="panel"><span class="sub">Regime score, last 90 sessions</span>${spark((g.history || []).map(x => x[1]), "var(--ink)", 50)}</div>
+    <h2>How each regime has behaved (2016–2026)</h2>
+    <p class="hint">SPY over the following 20 trading days. Lower scores don't mean lower returns, they mean bigger swings: stress had the best average rebound but more than twice the volatility. Use it to size positions and set stops.</p>
+    <div class="panel scroll"><table><thead><tr><th>Regime</th><th>Days</th><th>SPY 20d</th><th>Swings</th><th>Worst dip</th></tr></thead>
+      <tbody>${(DATA.regimes || []).map(r => `<tr${r.label === g.label ? ` style="font-weight:600"` : ""}><td>${esc(r.label)}${r.label === g.label ? " ◂" : ""}</td><td>${r.stats.days_pct}%</td><td>${pct(r.stats.spy_20d)}</td><td>${r.stats.vol}%</td><td class="bad">${pct(r.stats.dip)}</td></tr>`).join("")}</tbody></table></div>
+    <h2>Sectors</h2>
+    <p class="hint">Sector ETFs ranked by performance against SPY over 20 days${liveOn() ? "; today's move is live" : ""}. Leadership narrowing to one or two sectors while breadth falls is a warning sign.</p>
+    <div class="panel scroll"><table><thead><tr><th>Sector</th><th>Today</th><th>5d vs SPY</th><th>20d vs SPY</th><th>50d</th></tr></thead>
+      <tbody>${sec.map(s => { const l = lv(s.etf), c = l ? l.chg : s.chg1;
+        return `<tr><td><b>${esc(s.name)}</b> <span class="sub" style="display:inline">${s.etf}</span></td><td class="${tone(c)}">${pct(c)}</td><td class="${tone(s.rs5)}">${pct(s.rs5)}</td><td class="${tone(s.rs20)}">${pct(s.rs20)}</td><td>${s.above50 ? `<span class="good">above</span>` : `<span class="bad">below</span>`}</td></tr>`; }).join("")}</tbody></table></div>`;
+}
+function renderWatch() {
+  const rows = WATCH.map(s => BY.get(s) || { sym: s, missing: true });
+  return `<div class="addbar"><input class="search" id="add-sym" placeholder="Add a ticker, e.g. NVDA" autocapitalize="characters" aria-label="Ticker to add"><button class="btn primary" data-add>Add</button></div>
+    <p class="hint">Your watchlist: live prices every 15 minutes while the market is open, trend, next earnings and short interest. Alerts fire on a ${DATA.alert_move ?? 5}%+ move in a day and before earnings. Tap a stock for details.</p>
+    ${rows.map(s => s.missing ? `<button class="row" data-sym="${esc(s.sym)}"><span><span class="sym">${esc(s.sym)}</span><span class="sub">Data arrives with the next daily run.</span></span><span></span><span></span></button>`
+      : stockRow(s, s.rs20, "vs SPY 20d", s.dtc >= 5 ? `<span class="tag">${s.dtc.toFixed(1)}d to cover</span>` : "")).join("")
+      || `<p class="empty">Your watchlist is empty. Add a ticker above, or open any stock in the Stocks tab.</p>`}`;
+}
+function renderEarnings() {
+  const e = (DATA.earnings || []).filter(x => ui.earn === "all" || WATCH.includes(x.sym));
+  const byDate = {}; e.forEach(x => (byDate[x.date] ||= []).push(x));
+  return `<div class="chips"><button class="chip" data-earn="all" aria-pressed="${ui.earn === "all"}">All liquid stocks</button><button class="chip" data-earn="watch" aria-pressed="${ui.earn === "watch"}">Watchlist only</button></div>
+    <p class="hint">Earnings in the next ${DATA.earnings_days ?? 14} days (Nasdaq calendar). A position held through earnings can gap 5–20% either way: decide in advance whether to hold, trim or wait.</p>
+    ${Object.entries(byDate).map(([d, list]) => `<h2>${dateShort(d)}</h2><div class="panel scroll"><table><tbody>${list.map(x => `<tr class="click" data-sym="${esc(x.sym)}"><td><b>${esc(x.sym)}</b>${WATCH.includes(x.sym) ? ` <span class="meh">★</span>` : ""} <span class="sub" style="display:inline">${esc((x.name || "").slice(0, 26))}</span></td><td>${esc(x.time) || "–"}</td><td>est ${x.eps_est != null ? "$" + x.eps_est.toFixed(2) : "–"}</td><td>${usd(x.mcap)}</td></tr>`).join("")}</tbody></table></div>`).join("")
+      || `<p class="empty">${ui.earn === "watch" ? "None of your watchlist reports in this window." : "No earnings found."}</p>`}`;
+}
+function renderShorts() {
+  const all = DATA.squeeze || [], list = all.filter(x => ui.shorts === "all" || x.pressure);
+  return `<div class="chips"><button class="chip" data-shorts="pressure" aria-pressed="${ui.shorts === "pressure"}">Shorts under pressure</button><button class="chip" data-shorts="all" aria-pressed="${ui.shorts === "all"}">All crowded shorts</button></div>
+    <p class="hint">FINRA short interest as of ${esc(DATA.short_date || "–")} (published twice a month, about a week late). <b>Days to cover</b> = shares sold short ÷ average daily volume: how many days of normal trading shorts would need to buy back. "Under pressure" = 5+ days to cover <i>and</i> the price is rising (above its 50-day average, up over 20 days), the setup where short covering can add fuel. Crowded shorts in falling stocks are usually right.</p>
+    ${list.map(x => stockRow(BY.get(x.sym) || x, x.dtc, "days to cover", x.pressure ? `<span class="tag good">under pressure</span>` : "",
+      `Short interest ${pct(x.si_chg, 0)} since last report · ${pct(x.chg20)} in 20d · ${x.vs50 > 0 ? "above" : "below"} 50d`).replace(/class="big good">\+?/, 'class="big">')).join("")
+      || `<p class="empty">Nothing matches right now.</p>`}`;
+}
+function stocksList() {
+  const q = ui.q.trim().toUpperCase();
+  let l = STOCKS; if (q) l = l.filter(s => s.sym.includes(q) || (s.name || "").toUpperCase().includes(q));
+  const key = { rs20: s => -(s.rs20 ?? -1e9), chg1: s => -(s.chg1 ?? -1e9), chg20: s => -(s.chg20 ?? -1e9), high: s => -(s.from_high ?? -1e9), dtc: s => -(s.dtc ?? -1), dv: s => -(s.dv20 ?? 0) }[ui.sort];
+  return [...l].sort((a, b) => key(a) - key(b));
+}
+function renderStocksRows() { const l = stocksList(), lab = { rs20: ["rs20", "vs SPY 20d"], chg1: ["chg1", "last session"], chg20: ["chg20", "20 days"], high: ["from_high", "from 52w high"], dtc: ["dtc", "days to cover"], dv: ["rs20", "vs SPY 20d"] }[ui.sort];
+  return `<p class="sub" style="margin:2px">${l.length} stocks</p>${l.slice(0, ui.shown).map(s => stockRow(s, s[lab[0]], lab[1])).join("") || `<p class="empty">Nothing matches.</p>`}
+    ${l.length > ui.shown ? `<button class="btn" style="width:100%" data-more>Show 40 more</button>` : ""}`; }
+function renderStocks() {
+  return `<div class="toolbar"><input class="search" id="q" type="search" placeholder="Search ticker or name" value="${esc(ui.q)}" aria-label="Search stocks">
+    <select class="sort" id="sort" aria-label="Sort by">${[["rs20", "Strongest vs SPY (20d)"], ["chg1", "Last session"], ["chg20", "20-day change"], ["high", "Closest to 52w high"], ["dtc", "Days to cover"], ["dv", "Most traded"]].map(([v, l]) => `<option value="${v}" ${ui.sort === v ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+    <p class="hint">${DATA.universe_count} liquid US stocks (price over $5, $20M+ traded a day), refreshed after each close. Tap one for details or to add it to your watchlist.</p>
+    <div id="stock-rows">${renderStocksRows()}</div>`;
+}
+function renderAlerts() {
+  const a = [...(DATA.alerts || []), ...(LIVE?.alerts || [])].filter((x, i, arr) => arr.findIndex(y => y.ts === x.ts && y.title === x.title) === i).sort((x, y) => y.ts - x.ts);
+  return `<h2>Recent alerts</h2><p class="hint">The same alerts pushed to your phone through ntfy.</p>
+    <div class="panel">${a.map(x => `<div class="alert"><b class="${x.level === "hot" ? "bad" : "good"}">${esc(x.title)}</b><p>${esc(x.body)}</p><p>${ago(new Date(x.ts * 1000))}</p></div>`).join("") || `<p class="empty">No alerts yet.</p>`}</div>`;
+}
+const TABS = [["market", "Market", renderMarket], ["watch", "Watchlist", renderWatch], ["earnings", "Earnings", renderEarnings],
+  ["shorts", "Short interest", renderShorts], ["stocks", "Stocks", renderStocks], ["alerts", "Alerts", renderAlerts]];
+
+/* ================= detail sheet ================= */
+function detail(s) {
+  const l = lv(s.sym), w = WATCH.includes(s.sym), e = (DATA.earnings || []).find(x => x.sym === s.sym), sq = (DATA.squeeze || []).find(x => x.sym === s.sym);
+  return `<div class="sheet-head"><span class="sheet-title">${esc(s.sym)}<small>${esc(s.name || "")}</small></span>
+      <button class="icon-btn" data-close aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+    <div class="sheet-body">
+      <div class="stats" style="margin-top:12px"><div><span>Price${l ? " (live)" : ""}</span><b>${price(l?.price ?? s.price)}</b></div>
+        <div><span>${l ? "Today" : "Last session"}</span><b class="${tone(l ? l.chg : s.chg1)}">${pct(l ? l.chg : s.chg1)}</b></div></div>
+      <div class="spark-wrap">${spark(s.spark, "var(--ink)", 60)}</div><p class="sub" style="margin:2px 0 10px">Last 60 sessions</p>
+      <button class="btn ${w ? "" : "primary"}" data-toggle="${esc(s.sym)}">${w ? "Remove from watchlist" : "Add to watchlist"}</button>
+      <h3>Trend</h3><div class="stats">
+        <div><span>vs 50-day average</span><b class="${tone(s.vs50)}">${pct(s.vs50)}</b></div><div><span>vs 200-day average</span><b class="${tone(s.vs200)}">${pct(s.vs200)}</b></div>
+        <div><span>From 52-week high</span><b>${pct(s.from_high)}</b></div><div><span>5 / 20 days</span><b>${pct(s.chg5)} / ${pct(s.chg20)}</b></div>
+        <div><span>vs SPY, 20 / 60 days</span><b><span class="${tone(s.rs20)}">${pct(s.rs20)}</span> / <span class="${tone(s.rs60)}">${pct(s.rs60)}</span></b></div>
+        <div><span>Typical daily range (ATR)</span><b>${s.atr_pct != null ? s.atr_pct.toFixed(1) + "%" : "–"}</b></div>
+        <div><span>Volume last session</span><b>${s.rvol != null ? s.rvol.toFixed(1) + "× normal" : "–"}</b></div><div><span>Traded per day</span><b>${usd(s.dv20)}</b></div></div>
+      <h3>Catalysts</h3><div class="stats">
+        <div><span>Next earnings</span><b>${e ? `${dateShort(e.date)} ${esc(e.time)}` : "none in 2 weeks"}</b></div>
+        <div><span>EPS estimate</span><b>${e?.eps_est != null ? "$" + e.eps_est.toFixed(2) + ` (${e.ests} analysts)` : "–"}</b></div>
+        <div><span>Days to cover</span><b>${s.dtc != null ? s.dtc.toFixed(1) : "–"}</b></div><div><span>Short interest change</span><b>${pct(s.si_chg, 0)}</b></div></div>
+      ${sq?.pressure ? `<p class="hint"><span class="tag good">shorts under pressure</span> crowded short with a rising price.</p>` : ""}
+      <div class="stats" style="margin-top:16px"><div><a href="https://www.tradingview.com/symbols/${encodeURIComponent(s.sym.replace(".", "-"))}/" target="_blank" rel="noopener">TradingView</a></div>
+        <div><a href="https://finviz.com/quote.ashx?t=${encodeURIComponent(s.sym.replace(".", "-"))}" target="_blank" rel="noopener">Finviz</a></div></div>
+    </div>`;
+}
+function openSheet(sym, replace = false) { const s = BY.get(sym) || { sym, name: "Not in the universe yet", spark: [] };
+  if (!replace) history.pushState({ sheet: sym }, "", "#" + current + "/" + sym);
+  $("#layer").innerHTML = `<div class="sheet-back" data-close></div><div class="sheet" role="dialog" aria-modal="true">${detail(s)}</div>`; document.body.style.overflow = "hidden"; }
+function closeSheet(fromPop = false) { if (!$("#layer").innerHTML) return; $("#layer").innerHTML = ""; document.body.style.overflow = ""; if (!fromPop && history.state?.sheet) history.back(); }
+function openSettings(note = "") { const g = gh();
+  $("#layer").innerHTML = `<div class="sheet-back" data-close></div><div class="sheet" role="dialog" aria-modal="true"><div class="sheet-head"><span class="sheet-title">Settings</span><button class="icon-btn" data-close aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+    <div class="sheet-body">${note ? `<p class="meh">${esc(note)}</p>` : ""}<p class="hint" style="margin-top:12px">Editing the watchlist saves docs/watchlist.json in the repo. It needs a GitHub fine-grained token with <b>Contents: Read and write</b> on this repo (you can add this repo to the token you made for the crypto Cockpit). Stored only in this browser.</p>
+      <div class="field"><label>GitHub user</label><input id="f-owner" value="${esc(g.owner)}"></div><div class="field"><label>Repo</label><input id="f-repo" value="${esc(g.repo)}"></div>
+      <div class="field"><label>Token</label><input id="f-token" type="password" value="${esc(g.token)}" placeholder="github_pat_…" autocomplete="off"></div>
+      <button class="btn primary" data-save>Save and test</button> <span id="set-status" class="sub" style="display:inline"></span></div></div>`; }
+async function saveSettings() { store.set("owner", $("#f-owner").value.trim()); store.set("repo", $("#f-repo").value.trim()); store.set("token", $("#f-token").value.trim());
+  const st = $("#set-status"); st.textContent = "Testing…";
+  try { const r = await ghGet(); WATCH = r.tickers; st.innerHTML = `<span class="good">Connected.</span>`; render(); } catch (e) { st.innerHTML = `<span class="bad">${esc(e.message)}</span>`; } }
+
+/* ================= shell ================= */
+function render() {
+  const errs = Object.entries({ ...(DATA.errors || {}), ...(liveOn() ? LIVE.errors || {} : {}) });
+  $("#app").innerHTML = `${header()}${errs.length ? `<p class="errors">${errs.length} source${errs.length > 1 ? "s" : ""} didn't update: ${errs.map(([k, v]) => `<b>${esc(k)}</b> (${esc(v)})`).join("; ")}</p>` : ""}
+    <nav><div class="tabs" role="tablist">${TABS.map(([id, l]) => `<button role="tab" data-tab="${id}" aria-selected="${id === current}">${l}</button>`).join("")}</div></nav>
+    ${TABS.map(([id, , fn]) => `<section id="tab-${id}" ${id === current ? "" : "hidden"}>${fn()}</section>`).join("")}`;
+  requestAnimationFrame(() => requestAnimationFrame(() => document.querySelectorAll(".needle").forEach(n => n.style.transform = `rotate(${-90 + 1.8 * +n.dataset.v}deg)`)));
+  stamp();
+}
+function stamp() { if (!DATA) return; const el = $("#stamp");
+  el.textContent = liveOn() ? `Live ${when(LIVE.generated_at)}` : `Close of ${DATA.session || "–"} · updated ${ago(DATA.generated_at)}`;
+  el.classList.toggle("stale", (Date.now() - new Date(DATA.generated_at)) / 3.6e6 > 30); }
+document.addEventListener("click", e => { const t = e.target;
+  if (t.closest("[data-close]")) return closeSheet();
+  const tg = t.closest("[data-toggle]"); if (tg) return toggleWatch(tg.dataset.toggle);
+  if (t.closest("[data-add]")) return toggleWatch($("#add-sym").value);
+  if (t.closest("[data-save]")) return saveSettings();
+  if (t.closest("#open-settings")) return openSettings();
+  const r = t.closest("[data-sym]"); if (r) return openSheet(r.dataset.sym);
+  const tab = t.closest("[data-tab]"); if (tab) { current = tab.dataset.tab; history.replaceState(null, "", "#" + current); render(); return; }
+  const ec = t.closest("[data-earn]"); if (ec) { ui.earn = ec.dataset.earn; return render(); }
+  const sc = t.closest("[data-shorts]"); if (sc) { ui.shorts = sc.dataset.shorts; return render(); }
+  if (t.closest("[data-more]")) { ui.shown += 40; $("#stock-rows").innerHTML = renderStocksRows(); } });
+document.addEventListener("input", e => { if (e.target.id === "q") { ui.q = e.target.value; ui.shown = 40; $("#stock-rows").innerHTML = renderStocksRows(); } });
+document.addEventListener("change", e => { if (e.target.id === "sort") { ui.sort = e.target.value; ui.shown = 40; $("#stock-rows").innerHTML = renderStocksRows(); } });
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeSheet(); if (e.key === "Enter" && e.target.id === "add-sym") toggleWatch(e.target.value); });
+window.addEventListener("popstate", () => closeSheet(true));
+const getJson = p => fetch(p + "?t=" + Date.now(), { cache: "no-store" }).then(r => r.ok ? r.json() : null).catch(() => null);
+async function refresh() { if (document.hidden || !DATA || $("#layer").innerHTML) return stamp();
+  const [d, l] = await Promise.all([getJson("data.json"), getJson("live.json")]); let ch = false;
+  if (l && l.generated_at !== LIVE?.generated_at) { LIVE = l; ch = true; }
+  if (d && d.generated_at !== DATA.generated_at) { DATA = d; const s = await getJson("stocks.json"); if (s) { STOCKS = s.stocks; BY = new Map(STOCKS.map(x => [x.sym, x])); } ch = true; }
+  if (ch) { const y = scrollY; render(); scrollTo(0, y); } else stamp(); }
+(async function boot() {
+  const [d, s, l, w] = await Promise.all([getJson("data.json"), getJson("stocks.json"), getJson("live.json"), getJson("watchlist.json")]);
+  if (!d) { $("#stamp").textContent = "No data"; $("#app").innerHTML = `<p class="empty">No data yet. The first daily run fills this in.</p>`; return; }
+  DATA = d; LIVE = l; STOCKS = s?.stocks || []; BY = new Map(STOCKS.map(x => [x.sym, x]));
+  const c = store.get("watch_cache"); WATCH = c && Date.now() - c.at < 15 * 60000 ? c.tickers : (w?.tickers || []);
+  if (!TABS.some(([id]) => id === current)) current = "market";
+  render();
+  if (gh().token) ghGet().then(r => { WATCH = r.tickers; render(); }).catch(() => {});
+  setInterval(refresh, 5 * 60000); setInterval(stamp, 60000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+})();
+</script>
+</body>
+</html>
